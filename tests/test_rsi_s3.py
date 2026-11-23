@@ -17,7 +17,7 @@ SITE = "data.authority-site.cn"
 
 
 class S3LLM(FakeLLM):
-    def json(self, role, system, user, schema):
+    def json(self, role, system, user, schema, max_tokens=None):
         if schema is HintDraft:
             self.calls.append((role, "HintDraft"))
             return HintDraft(hint=NEW_HINT, rationale="偏向能抓取的原文"), 50

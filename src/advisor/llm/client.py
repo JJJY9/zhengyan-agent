@@ -31,7 +31,8 @@ class DeepSeekClient:
     def configured(self) -> bool:
         return self._client is not None
 
-    def json(self, role: str, system: str, user: str, schema: type[BaseModel]) -> tuple[BaseModel, int]:
+    def json(self, role: str, system: str, user: str, schema: type[BaseModel],
+             max_tokens: int | None = None) -> tuple[BaseModel, int]:
         if self._client is None:
             raise LLMNotConfigured("未配置 DEEPSEEK_API_KEY：请在 .env 中填写后重启服务")
         cfg = self.roles[role]
@@ -40,6 +41,7 @@ class DeepSeekClient:
             {"role": "system", "content": f"{system}\n\n只输出一个 JSON 对象，符合以下 JSON Schema：\n{schema_hint}"},
             {"role": "user", "content": user},
         ]
+        extra = {"max_tokens": max_tokens} if max_tokens else {}
         tokens = 0
         for attempt in range(2):  # 一次修复重试
             resp = self._client.chat.completions.create(
@@ -47,6 +49,7 @@ class DeepSeekClient:
                 messages=messages,
                 response_format={"type": "json_object"},
                 extra_body={"reasoning_effort": cfg.get("effort", "high")},
+                **extra,
             )
             tokens += resp.usage.total_tokens if resp.usage else 0
             content = resp.choices[0].message.content or ""

@@ -154,7 +154,8 @@ class Nodes:
         how = ROUTE_SOURCE_LABEL.get(decision.source, "")
         self._event(state, "route", f"采用「{ROUTE_LABEL[decision.route]}」{'（' + how + '）' if how else ''}，"
                                     f"使用{ROLE_LABEL.get(rp.llm_role, rp.llm_role)}")
-        return {"route": decision.route, "routing": decision.model_dump(mode="json"), "budget": budget.to_dict()}
+        return {"route": decision.route, "routing": decision.model_dump(mode="json"), "budget": budget.to_dict(),
+                "rsi_versions": self.d.rsi.versions() if self.d.rsi else {}}   # 任务开始时的方法版本快照
 
     # ---------- 计划 ----------
     def plan(self, state: ResearchState) -> dict:
@@ -368,7 +369,7 @@ class Nodes:
             quality=quality, boundary_notes=state.get("boundary_notes", []) + boundary, task_id=state["task_id"],
             created_at=datetime.now(timezone.utc), routing=state.get("routing"), deliberation=delib,
             prior_review=draft.get("prior_review", []), clue_ids=clue_ids,
-            rsi_versions=self.d.rsi.versions() if self.d.rsi else {},
+            rsi_versions=state.get("rsi_versions") or (self.d.rsi.versions() if self.d.rsi else {}),
             lessons_used=sorted(set(state.get("lessons_used", [])
                                     + [x for r in (delib or {}).get("team", []) for x in r.get("lessons", [])])),
         )

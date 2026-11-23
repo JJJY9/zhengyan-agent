@@ -105,7 +105,7 @@ class FakeLLM:
         self.mode, self.challenge_severity, self.ruling = mode, challenge_severity, ruling
         self.chair_severity, self.fail_challenges = chair_severity, fail_challenges
 
-    def json(self, role, system, user, schema):
+    def json(self, role, system, user, schema, max_tokens=None):
         self.calls.append((role, schema.__name__))
         self.prompts.setdefault(schema.__name__, []).append(user)
         if schema is IntakeOut:

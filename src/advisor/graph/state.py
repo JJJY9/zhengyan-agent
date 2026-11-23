@@ -45,6 +45,7 @@ class ResearchState(TypedDict, total=False):
     responses: list[dict]
     deliberation: dict
     lessons_used: Annotated[list[str], operator.add]     # RSI：本次研究召回的经验卡
+    rsi_versions: dict[str, int | None]                   # RSI：任务开始时的方法版本快照（提交时不再重读）
     dossier_key: str
     version: int
     report_md: str

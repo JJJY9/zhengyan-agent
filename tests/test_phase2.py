@@ -226,7 +226,7 @@ def test_dependency_propagation_marks_stale(repo, policy):
 # ---------- 一期验收补齐：撤销、审批绑定、clue 可见、追踪 ----------
 def test_cancel_stops_in_flight(repo, policy):
     class CancelOnDraft(FakeLLM):
-        def json(self, role, system, user, schema):
+        def json(self, role, system, user, schema, max_tokens=None):
             if schema.__name__ == "DraftOutput":
                 repo.request_cancel(self.task_id)
             return super().json(role, system, user, schema)
@@ -443,3 +443,26 @@ def test_resume_is_single_flight(repo, policy, monkeypatch):
         svc.resume(tid, approve=True, background=False)
     monkeypatch.undo()
     assert repo.get_task(tid)["status"] == "done"
+
+
+def test_rsi_versions_snapshotted_at_task_start(repo, policy):
+    from advisor.skills.research.earnings_review import DraftOutput
+    holder = {"v": 1}
+
+    class LLM(FakeLLM):
+        def json(self, role, system, user, schema, max_tokens=None):
+            out = super().json(role, system, user, schema, max_tokens=max_tokens)
+            if schema is DraftOutput:                 # 起草之后才发布新版本（模拟长任务中途 RSI release）
+                holder["v"] = 9
+            return out
+
+    svc = make_service(repo, policy, LLM())
+    loader = svc.deps.rsi
+    orig = loader.versions
+    loader.versions = lambda: {k: holder["v"] for k in ("lessons", "routing", "search")}
+    try:
+        run(svc)
+    finally:
+        loader.versions = orig
+    d = repo.get_dossier(CODE)
+    assert d.rsi_versions == {"lessons": 1, "routing": 1, "search": 1}

@@ -19,7 +19,7 @@ class RSILLM(FakeLLM):
         super().__init__(wrong_number=False, **kw)
         self.card = card or {}
 
-    def json(self, role, system, user, schema):
+    def json(self, role, system, user, schema, max_tokens=None):
         if schema is LessonDraft:
             self.calls.append((role, "LessonDraft"))
             return LessonDraft(**({"title": "预收类科目变动先排除渠道政策", "applies_to": "消费品公司合同负债或预收款大幅变动",
