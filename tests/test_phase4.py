@@ -124,3 +124,24 @@ def test_dossier_at_picks_latest_as_of_not_latest_version(services, service):
     assert versions[:2] == [2, 1]
     d = s.strategy.paper.dossier_at(CODE, date(2026, 10, 20))
     assert d is not None and d.version == 1 and d.as_of == as_of()
+
+
+def test_paper_step_is_idempotent_under_race(services, monkeypatch):
+    """定时推进与手动推进并发：唯一索引兜底，输掉竞争的一侧不得写入重复成交。"""
+    book = services.strategy
+    v = book.create(spec(), "owner", "并发推进幂等测试：唯一索引作为写入闸门")
+    v = book.start_paper(v.card_id, 1, "owner", start=START)
+    day = START + timedelta(days=2)
+    first = book.paper.step(v, day)
+    trades_before = len(book.store.list_trades(v.card_id, v.version))
+    real_navs = book.paper.store.navs_of
+    calls = {"n": 0}
+
+    def stale(card_id, version):
+        calls["n"] += 1
+        return [] if calls["n"] == 1 else real_navs(card_id, version)   # 第一次读到旧快照（并发窗口）
+
+    monkeypatch.setattr(book.paper.store, "navs_of", stale)
+    again = book.paper.step(v, day)                                     # 修复前：重复写成交后在净值处抛错
+    assert again.date == first.date and again.nav == first.nav
+    assert len(book.store.list_trades(v.card_id, v.version)) == trades_before
