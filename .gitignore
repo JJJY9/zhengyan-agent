@@ -6,7 +6,7 @@ __pycache__/
 node_modules/
 web/dist/
 web/tsconfig.tsbuildinfo
-data/
+/data/
 .claude/
 
 .DS_Store
