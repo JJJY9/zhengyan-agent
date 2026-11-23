@@ -43,9 +43,31 @@ class ResearchService:
         reason = ""
         if ticket.get("ttl_s") and time.time() - ticket.get("issued_at", 0) > ticket["ttl_s"]:
             approve, reason = False, "审批已过期"
-        self.deps.repo.update_task(task_id, status="running", interrupt=None)
+        # 原子夺取「待审批 → 运行中」：并发双击/客户端重试只有一次真正恢复，
+        # 否则同一 thread 会被提交两次 Command(resume)，主席与提交节点重放、生成两份档案
+        if not self.deps.repo.try_resume_task(task_id):
+            raise ValueError("任务已被另一次恢复操作接管")
+        # 审批等待（含停机）不计入执行时限：把预算时钟顺延暂停时长
+        issued = float(ticket.get("issued_at") or 0)
+        if issued:
+            self._rebase_paused_clock(task_id, max(time.time() - issued, 0.0))
         self.deps.repo.push_event(task_id, "approval", f"{'同意' if approve else '拒绝'}{('（' + reason + '）') if reason else ''}")
         self._submit(task_id, Command(resume={**ticket, "approve": approve, "reason": reason}), background)
+
+    def _rebase_paused_clock(self, task_id: str, pause_s: float) -> None:
+        """把检查点里的预算 started_at 顺延暂停时长：恢复后的时限只统计实际执行时间。"""
+        if pause_s <= 0:
+            return
+        config = {"configurable": {"thread_id": task_id}, "recursion_limit": 60}
+        try:
+            budget = (self.graph.get_state(config).values or {}).get("budget")
+            if not budget:
+                return
+            budget = dict(budget)
+            budget["started_at"] = float(budget.get("started_at", time.time())) + pause_s
+            self.graph.update_state(config, {"budget": budget})
+        except Exception as e:  # 顺延失败不应阻止恢复，但要记录
+            self.deps.repo.push_event(task_id, "runner", f"预算时钟顺延失败：{type(e).__name__}: {e}")
 
     def cancel(self, task_id: str) -> str | None:
         status = self.deps.repo.request_cancel(task_id)

@@ -413,3 +413,33 @@ def test_abstain_with_high_stakes_escalates_deep():
     assert d.abstain and d.route == "deep"                                     # 拒判时高后果+高分歧取深研
     d2 = route_from_probs({"quick": 0.45, "standard": 0.35, "deep": 0.20}, cfg, stakes="low", uncertainty="low")
     assert d2.abstain and d2.route == "standard"                               # 普通拒判仍按前两名升级
+
+
+def test_resume_after_long_wait_rebases_budget_clock(repo, policy):
+    """审批/停机等待不应吃掉执行时限：恢复后还要跑取数，恢复时预算时钟须顺延暂停时长。"""
+    svc = make_service(repo, policy)
+    tid, task = run(svc, question=f"我的持仓有 30万元 {CODE}，要不要卖？")
+    assert task["status"] == "waiting_approval" and task["interrupt"]["type"] == "consent"
+    config = {"configurable": {"thread_id": tid}, "recursion_limit": 60}
+    budget = dict(svc.graph.get_state(config).values["budget"])
+    budget["started_at"] = time.time() - 1000                  # 模拟已执行 1000s（standard 上限 900s）
+    svc.graph.update_state(config, {"budget": budget})
+    ticket = repo.get_task(tid)["interrupt"]
+    repo.update_task(tid, interrupt={**ticket, "issued_at": time.time() - 800})   # 其中 800s 在等审批
+    svc.resume(tid, approve=True, background=False)
+    t = repo.get_task(tid)
+    assert t["status"] == "done", t
+
+
+def test_resume_is_single_flight(repo, policy, monkeypatch):
+    """并发 resume（双击/客户端重试）只允许一次真正恢复。"""
+    svc = make_service(repo, policy, FakeLLM(challenge_severity="high", ruling="unresolved"))
+    tid, task = run(svc, route="deep")
+    assert task["status"] == "waiting_approval"
+    stale = dict(repo.get_task(tid))                            # 两个并发请求都读到旧快照
+    monkeypatch.setattr(repo, "get_task", lambda task_id: stale)
+    svc.resume(tid, approve=True, background=False)
+    with pytest.raises(ValueError, match="接管"):
+        svc.resume(tid, approve=True, background=False)
+    monkeypatch.undo()
+    assert repo.get_task(tid)["status"] == "done"
