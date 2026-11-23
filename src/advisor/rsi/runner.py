@@ -34,7 +34,10 @@ class RSIRunner:
     def _move(self, run: Run, status: str, action: str, actor: str, detail: str, **extra) -> Run:
         old = run.status
         run.status = status
-        self.ledger.save_run(run)
+        # 乐观锁：后台评测跑几分钟，期间人工 reject/approve 可能已改变状态；
+        # 状态未变才允许整文档写回，避免用旧副本静默覆盖人工决定
+        if not self.ledger.save_run(run, expect_status=old):
+            raise TransitionError(f"{run.run_id} 的状态已从「{old}」被其他操作改变，请刷新后重试")
         self.ledger.event(action, actor, run_id=run.run_id, kind=run.kind, scenario=run.scenario,
                           from_status=old, to_status=status, detail=detail, **extra)
         return run
@@ -67,6 +70,12 @@ class RSIRunner:
             ev = evaluate_s3(self.deps, self.ledger, run, base.content, run.content, log)
         run.eval = ev
         run.gates = run_gates(run, ev, self.ledger)
+        current = self.ledger.get_run(run.run_id)
+        if current is None or current.status != "draft":
+            # 评测耗时期间运行已被人工拒绝/批准：人工操作优先，本次结果不写回
+            self.ledger.event("evaluate.discard", "evaluator", run_id=run.run_id, kind=run.kind, scenario=run.scenario,
+                              detail=f"评测完成时运行状态为「{current.status if current else '缺失'}」，结果未写入")
+            return current or run
         failed = [g for g in run.gates if not g.passed]
         self.ledger.event("evaluate", "evaluator", run_id=run.run_id, kind=run.kind, scenario=run.scenario,
                           detail="六道门控：" + " ".join(f"{g.label}{'✓' if g.passed else '✗'}" for g in run.gates),

@@ -144,12 +144,18 @@ class Watcher:
             raise WatchError("提醒不存在")
         if alert.status != "open":
             raise WatchError("只有待处理的提醒可以发起复核")
+        if not self.store.try_start_review(alert_id):        # 原子抢占：并发复核只允许一个真正发起
+            raise WatchError("提醒已被另一次复核操作接管")
         focus = [a.text for a in alert.affected][:8]
         changes = "；".join(e.title for e in alert.events)
         question = f"{alert.name}（{alert.ticker}）上次研究后有新变化：{changes}。请用新数据重新研究，说明哪些旧结论仍成立、哪些需要修正。"[:480]
-        task_id = service.start(ResearchRequest(question=question, ticker=alert.ticker, route="standard"),
-                                review_focus=focus)
-        self.store.update_alert(alert_id, status="reviewing", review_task_id=task_id)
+        try:
+            task_id = service.start(ResearchRequest(question=question, ticker=alert.ticker, route="standard"),
+                                    review_focus=focus)
+        except Exception:
+            self.store.update_alert(alert_id, status="open")   # 起任务失败：把提醒放回待处理，允许重试
+            raise
+        self.store.update_alert(alert_id, review_task_id=task_id)
         return task_id
 
     def dismiss(self, alert_id: str, note: str) -> None:

@@ -49,29 +49,35 @@ def summarize(results: list[dict], baseline: str = "standard", candidate: str = 
 def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = None) -> str:
     repo = svc.deps.repo
     run_id = run_id or "ev_" + uuid.uuid4().hex[:8]
-    run = {"run_id": run_id, "type": "compare", "status": "running", "routes": routes, "cases": cases,
-           "results": [], "created_at": datetime.now(timezone.utc)}
+    run = repo.get_eval(run_id) or {"run_id": run_id, "type": "compare", "routes": routes, "cases": cases,
+                                    "results": [], "created_at": datetime.now(timezone.utc)}
+    run.update(status="running", routes=routes, cases=cases)
+    run.setdefault("results", [])
     repo.save_eval(run)
-    for case in cases:
-        for route in routes:
-            req = ResearchRequest(question=case["question"], ticker=case.get("ticker"), route=route,
-                                  as_of=date.fromisoformat(case["as_of"]) if case.get("as_of") else None)
-            entry = {"case": case["id"], "route": route}
-            try:
-                tid = svc.start(req, background=False, namespace=f"eval-{run_id}-{route}")
-                task = repo.get_task(tid)
-                entry["task_id"] = tid
-                if task["status"] == "done":
-                    d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])
-                    ev = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}
-                    entry.update(dossier_key=d.key, version=d.version, metrics=dossier_metrics(d, ev, task))
-                else:
-                    entry["error"] = f"{task['status']}: {task.get('error')}"
-            except Exception as e:  # noqa: BLE001  单例失败记录在案，不中断评测
-                entry["error"] = f"{type(e).__name__}: {e}"
-            run["results"].append(entry)
-            run["summary"] = summarize(run["results"])
-            repo.save_eval(run)
-    run["status"] = "done"
+    try:
+        for case in cases:
+            for route in routes:
+                entry = {"case": case["id"], "route": route}
+                try:
+                    req = ResearchRequest(question=case["question"], ticker=case.get("ticker"), route=route,
+                                          as_of=date.fromisoformat(case["as_of"]) if case.get("as_of") else None)
+                    tid = svc.start(req, background=False, namespace=f"eval-{run_id}-{route}")
+                    task = repo.get_task(tid)
+                    entry["task_id"] = tid
+                    if task["status"] == "done":
+                        d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])
+                        ev = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}
+                        entry.update(dossier_key=d.key, version=d.version, metrics=dossier_metrics(d, ev, task))
+                    else:
+                        entry["error"] = f"{task['status']}: {task.get('error')}"
+                except Exception as e:  # noqa: BLE001  单例失败记录在案，不中断评测
+                    entry["error"] = f"{type(e).__name__}: {e}"
+                run["results"].append(entry)
+                run["summary"] = summarize(run["results"])
+                repo.save_eval(run)
+        run["status"] = "done"
+    except Exception as e:  # noqa: BLE001  任何意外都落成 failed：评测页不会永远停在「进行中」
+        run["status"] = "failed"
+        run["error"] = f"{type(e).__name__}: {e}"
     repo.save_eval(run)
     return run_id

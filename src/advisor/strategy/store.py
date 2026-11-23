@@ -25,6 +25,8 @@ class StrategyStore:
         self.navs = db.paper_navs
         self.events = db.strategy_events
         self.cards.create_index([("card_id", ASCENDING), ("version", ASCENDING)], unique=True)
+        # 同一张卡只能有一个已晋级版本：并发 approve 时后到者会被唯一索引拦下
+        self.cards.create_index("card_id", unique=True, partialFilterExpression={"status": "promoted"})
         self.navs.create_index([("card_id", ASCENDING), ("version", ASCENDING), ("date", ASCENDING)], unique=True)
         self.trades.create_index([("card_id", ASCENDING), ("version", ASCENDING), ("date", ASCENDING)])
 
@@ -36,10 +38,17 @@ class StrategyStore:
     def insert(self, v: StrategyVersion) -> None:
         self.cards.insert_one(v.model_dump(mode="json"))
 
-    def save(self, v: StrategyVersion) -> None:
-        """只更新状态类字段；规则内容由 sha256 锁定，不能原地修改。"""
+    def save(self, v: StrategyVersion, expect_status: str | None = None) -> bool:
+        """只更新状态类字段；规则内容由 sha256 锁定，不能原地修改。
+
+        expect_status 给定时以「状态未变」做乐观锁，返回是否写入成功（并发操作不会互相覆盖）。
+        """
         fields = v.model_dump(mode="json", include={"status", "paper_start", "gates", "approvals", "reject_reason"})
-        self.cards.update_one({"card_id": v.card_id, "version": v.version, "sha256": v.sha256}, {"$set": fields})
+        q: dict = {"card_id": v.card_id, "version": v.version, "sha256": v.sha256}
+        if expect_status is not None:
+            q["status"] = expect_status
+        res = self.cards.update_one(q, {"$set": fields})
+        return res.matched_count == 1
 
     def get(self, card_id: str, version: int | None = None) -> StrategyVersion | None:
         q: dict = {"card_id": card_id} | ({"version": version} if version is not None else {})

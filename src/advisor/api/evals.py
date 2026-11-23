@@ -1,5 +1,6 @@
 """评测：路由校准、单 Agent 与多专家对照。"""
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -7,6 +8,8 @@ from pydantic import BaseModel
 from advisor.api.common import Svc
 
 router = APIRouter(prefix="/api/evals")
+
+ROUTE_CHOICES = {"quick", "standard", "deep"}
 
 
 class CompareIn(BaseModel):
@@ -44,9 +47,14 @@ def eval_update(svc: Svc):
 @router.post("/compare")
 def eval_compare(body: CompareIn, svc: Svc):
     from advisor.evals.compare import load_cases, run_compare
+    if not body.routes or set(body.routes) - ROUTE_CHOICES:
+        raise HTTPException(400, f"routes 只能是 {'/'.join(sorted(ROUTE_CHOICES))} 的非空子集")
     cases = [c for c in load_cases() if not body.case_ids or c["id"] in body.case_ids]
     if not cases:
         raise HTTPException(400, "没有匹配的评测用例")
     run_id = "ev_" + uuid.uuid4().hex[:8]
+    # 先登记评测文档再丢给后台线程：前端立即 GET /api/evals/{run_id} 不会 404
+    svc.deps.repo.save_eval({"run_id": run_id, "type": "compare", "status": "running", "routes": body.routes,
+                             "cases": cases, "results": [], "created_at": datetime.now(timezone.utc)})
     svc.submit(run_compare, svc.research, cases, body.routes, run_id)
     return {"run_id": run_id}

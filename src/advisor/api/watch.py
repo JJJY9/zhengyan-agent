@@ -57,6 +57,8 @@ def scan_one(ticker: str, svc: Svc):
 def review(alert_id: str, svc: Svc):
     """带着受影响的旧结论发起增量复核（标准研究，生成新版本）。"""
     from advisor.llm import LLMNotConfigured
+    if svc.watch.store.get_alert(alert_id) is None:
+        raise HTTPException(404, "提醒不存在")
     with conflict_on(WatchError, LLMNotConfigured):
         return {"task_id": svc.watch.start_review(alert_id, svc.research)}
 
