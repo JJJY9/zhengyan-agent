@@ -75,6 +75,7 @@ class Harness:
         llm: Any = None,
         decision: Any = None,
         cache: dict | None = None,
+        flight: dict | None = None,
     ):
         self.policy = policy
         self.registry = registry
@@ -89,6 +90,8 @@ class Harness:
         )
         # 幂等缓存：研究任务传入"任务级"字典（同一 task_id 的所有节点、并行专家共用）；不传则只在本实例内有效
         self._cache: dict[str, BaseModel] = cache if cache is not None else {}
+        # 在途占位（与 _cache 同生命周期）：并发的同参调用只执行一次，其余等待复用结果
+        self._flight: dict[str, threading.Event] = flight if flight is not None else {}
 
     def _base_record(self, kind: str, name: str) -> dict:
         return {"task_id": self.ctx.task_id, "kind": kind, "name": name, "route": self.ctx.route,
@@ -115,12 +118,28 @@ class Harness:
                 if key in self._cache:
                     record["status"] = "cache_hit"
                     return self._cache[key]
-                out = self._run_with_retry(skill, inp)          # 预算检查与计费在每次真实调用时进行
-                if not isinstance(out, skill.spec.output_model):
-                    raise HarnessDenied(f"{name} 输出不符合契约")
-                self._cache[key] = out
-                record["status"] = "ok"
-                return out
+                # 单飞：同一任务里并行专家用相同参数调用同一技能时，只让一个真正执行，其余等待复用结果
+                while True:
+                    ev = self._flight.get(key)
+                    if ev is None:
+                        ev = threading.Event()
+                        if self._flight.setdefault(key, ev) is ev:
+                            break
+                        continue
+                    ev.wait(timeout=float(skill.spec.timeout_s) + 5)
+                    if key in self._cache:
+                        record["status"] = "cache_hit"
+                        return self._cache[key]
+                try:
+                    out = self._run_with_retry(skill, inp)          # 预算检查与计费在每次真实调用时进行
+                    if not isinstance(out, skill.spec.output_model):
+                        raise HarnessDenied(f"{name} 输出不符合契约")
+                    self._cache[key] = out
+                    record["status"] = "ok"
+                    return out
+                finally:
+                    self._flight.pop(key, None)
+                    ev.set()
             except (HarnessDenied, ApprovalRequired, BudgetExceeded, SkillFailed, TaskCancelled) as e:
                 record.update(status=type(e).__name__, error=str(e))
                 raise
