@@ -48,6 +48,10 @@ def single_quarter(cumulative: Metric, previous_cumulative: Metric | None) -> Me
         if previous_cumulative is None:
             raise BasisMismatch(f"缺少 {cp.year} 年上一报告期累计值")
         pp = _period(previous_cumulative)
+        if previous_cumulative.basis != "cumulative":
+            raise BasisMismatch(f"上期值不是累计口径: {previous_cumulative.basis}")
+        if previous_cumulative.unit != cumulative.unit:
+            raise BasisMismatch(f"上期累计单位不一致: {previous_cumulative.unit} vs {cumulative.unit}")
         if previous_cumulative.field != cumulative.field or pp.year != cp.year or cp.month - pp.month != 3:
             raise BasisMismatch(f"上期累计不匹配: {pp}")
         value = cumulative.value - previous_cumulative.value

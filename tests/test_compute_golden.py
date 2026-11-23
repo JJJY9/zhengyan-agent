@@ -53,3 +53,18 @@ def test_price_stats():
     assert annualized_volatility(closes, 5) is None
     flat = [Decimal(10)] * 70
     assert annualized_volatility(flat, 60) == Decimal("0.00")
+
+
+def test_single_quarter_rejects_unit_mismatch():
+    cum = m("OPERATE_INCOME", "200", "2026-06-30")
+    prev = Metric(name="OPERATE_INCOME", field="OPERATE_INCOME", value=Decimal("100"), unit="万元",
+                  period="2026-03-31", basis="cumulative")
+    with pytest.raises(BasisMismatch):
+        single_quarter(cum, prev)
+
+
+def test_single_quarter_rejects_non_cumulative_previous():
+    cum = m("OPERATE_INCOME", "200", "2026-06-30")
+    prev = m("OPERATE_INCOME", "100", "2026-03-31", basis="single_quarter")
+    with pytest.raises(BasisMismatch):
+        single_quarter(cum, prev)

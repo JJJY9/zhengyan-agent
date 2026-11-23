@@ -33,7 +33,10 @@ RESTATE_TOLERANCE = timedelta(days=7)
 
 
 def _d(s: str | None) -> date | None:
-    return date.fromisoformat(s[:10]) if s else None
+    try:
+        return date.fromisoformat(s[:10]) if s else None
+    except ValueError:          # 数据源偶发 "NaT" 等脏值：当作缺失，不让整个技能失败
+        return None
 
 
 def _dt(d: date) -> datetime:

@@ -346,3 +346,33 @@ def test_eval_compare_isolated_namespace(repo, policy):
     assert r["status"] == "done" and len(r["results"]) == 2 and all(x.get("metrics") for x in r["results"])
     assert r["summary"]["verdict"]["decision"] in ("adopt_multi_expert", "keep_single_agent")
     assert repo.list_dossiers() == []                              # 评测档案不进入用户列表
+
+
+def test_valuation_negative_ttm_omits_pe(deps):
+    orig = FakeSource.income_rows
+
+    def lossy(self, code):
+        rows = orig(self, code)
+        for r in rows:
+            r["PARENT_NETPROFIT"] = str(-5 * 10 ** 9)
+        return rows
+
+    FakeSource.income_rows = lossy
+    try:
+        h = deps.harness("t", "standard", as_of(), Budget(limits={"wall_clock_s": 60}))
+        card = h.call("valuation.snapshot", code=CODE, as_of=as_of()).cards[0]
+        fields = {x.field for x in card.metrics}
+        assert "pe_ttm" not in fields and "pe_pct" not in fields
+        assert any("PE 不适用" in c for c in card.caveats)
+    finally:
+        FakeSource.income_rows = orig
+
+
+def test_plain_nat_returns_none():
+    import pandas as pd
+
+    from advisor.skills.data.ashare import _plain
+
+    assert _plain(pd.NaT) is None
+    assert _plain(pd.Timestamp("2026-08-15")) == "2026-08-15"
+    assert _plain(float("nan")) is None

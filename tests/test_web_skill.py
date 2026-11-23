@@ -108,3 +108,25 @@ def test_search_skips_invalid_rows_without_failing(policy, repo):
     assert out.dropped["invalid_row"] == 1
     again = search.run(search.spec.input_model(query="示例酒业 业绩", as_of=AS_OF))
     assert again.dropped["invalid_row"] == 1 and tools.searches == 1      # 脏数据进了缓存也不拖垮后续
+def test_gather_treats_empty_fetched_body_as_no_snapshot(deps):
+    from datetime import datetime, timezone
+
+    from advisor.contracts import SearchHit
+    from advisor.graph.gather import gather_web
+    from advisor.skills.data.web import FetchOut, SearchOut
+
+    h0 = SearchHit(title="示例酒业公告", url="https://www.stcn.com/a/1.html", site_name="证券时报",
+                   date=datetime(2026, 8, 16, tzinfo=timezone.utc), authority=4, rerank_score=2.5,
+                   summary="摘要：营收增长", snippet="", query="q")
+
+    class H:
+        def call(self, name, **kw):
+            if name == "web.search":
+                return SearchOut(final_query="q", hits=[h0], dropped={})
+            if name == "web.fetch":
+                return FetchOut(url=h0.url, title="t", content="   ")     # 抓回空正文
+            raise AssertionError(name)
+
+    res = gather_web(H(), deps, ["示例酒业 业绩"], AS_OF, "standard", max_fetch=4)
+    card = res.cards[0]
+    assert card.level == "C" and any("仅有搜索摘要" in c for c in card.caveats)
