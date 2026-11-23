@@ -24,7 +24,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "mongomock>=4.2", "respx>=0.21"]
+dev = [
+    "pytest>=8",
+    "mongomock>=4.2",
+    "respx>=0.21",
+    "ruff>=0.17.6",
+]
 
 [project.scripts]
 advisor = "advisor.cli:app"
@@ -40,3 +45,10 @@ packages = ["src/advisor"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 filterwarnings = ["ignore:datetime.datetime.utcnow:DeprecationWarning:mongomock"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# CI 只做正确性检查（未定义名、未使用导入、重复字典键等）；风格类规则不阻塞迭代
+select = ["F", "E9"]
