@@ -112,3 +112,15 @@ def test_closed_ticker_is_not_rebought_same_day(services):
     assert closed, "应该至少移出一次"
     assert not any((t.ticker, t.date) in closed for t in trades if t.side == "open")
     assert "3" in Rule(field="verified", op=">=", value=3.0).label() and "3.0" not in Rule(field="verified", op=">=", value=3.0).label()
+
+
+def test_dossier_at_picks_latest_as_of_not_latest_version(services, service):
+    """回填研究时点（CLI --as-of）会产生「版本号更高但 as_of 更早」的档案：
+    dossier_at 应取 as_of 最新的版本，而不是版本号最大的。"""
+    s = services
+    service.start(ResearchRequest(question=f"回填 {CODE} 历史时点研究", as_of=date(2026, 10, 1), route="standard"),
+                  background=False)
+    versions = [v["version"] for v in s.deps.repo.list_dossier_versions(CODE)]
+    assert versions[:2] == [2, 1]
+    d = s.strategy.paper.dossier_at(CODE, date(2026, 10, 20))
+    assert d is not None and d.version == 1 and d.as_of == as_of()
