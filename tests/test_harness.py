@@ -25,8 +25,9 @@ def make(policy, skills, route="standard", limits=None, as_of=date(2026, 10, 18)
 
 
 def skill(name, run=lambda i: Out(n=1), **kw):
+    timeout_s = kw.pop("timeout_s", 2)
     return Skill(spec=SkillSpec(name=name, version="1", category="data", permission="read", description="",
-                                input_model=In, output_model=Out, timeout_s=2, **kw), run=run)
+                                input_model=In, output_model=Out, timeout_s=timeout_s, **kw), run=run)
 
 
 def test_unregistered_and_not_whitelisted_denied(policy):
@@ -188,3 +189,43 @@ def test_llm_completion_capped_by_remaining_tokens(policy):
     h2.llm_client = LLM()
     h2.llm("draft", "s", "u", Out, purpose="x")
     assert seen["max_tokens"] == 8192               # 预算充足：封顶 8192，不放大模型默认输出长度
+
+
+def test_timeouts_do_not_poison_call_capacity(policy, monkeypatch):
+    """超时只放弃等待：单个技能跑飞不能占满共享容量，健康技能必须照常秒回。"""
+    import threading
+
+    import advisor.harness.executor as ex
+    monkeypatch.setattr(ex, "MAX_RETRIES", 0)              # 单次尝试，省去退避等待
+
+    def hang(i):
+        threading.Event().wait(10)                        # 永不按时返回（守护线程，测试结束即回收）
+        return Out(n=1)
+
+    h, _, _ = make(policy, [skill("market.daily", run=hang, timeout_s=0.02)],
+                   limits={"tokens": 10, "wall_clock_s": 60})
+    for _ in range(17):                                    # 超过旧实现 16 线程池的容量
+        with pytest.raises(SkillFailed, match="超时"):
+            h.call("market.daily")
+    h2, _, _ = make(policy, [skill("financials.statements")])
+    assert h2.call("financials.statements").n == 1        # 旧实现：健康调用排队到超时
+    workers = [t for t in threading.enumerate() if t.name == "harness-skill"]
+    assert workers and all(t.daemon for t in workers)
+
+
+def test_retries_are_charged_per_attempt(policy, monkeypatch):
+    """每次真实出站调用都扣预算：重试不是免费的，预算耗尽即停止重试。"""
+    import advisor.harness.executor as ex
+    monkeypatch.setattr(ex.time, "sleep", lambda *_: None)     # 去退避
+
+    calls = {"n": 0}
+
+    def flaky(i):
+        calls["n"] += 1
+        raise ConnectionError("down")
+
+    s = skill("web.search", run=flaky, budget_kind="search_calls", retryable=(ConnectionError,))
+    h, _, budget = make(policy, [s], limits={"search_calls": 2, "tokens": 10, "wall_clock_s": 60})
+    with pytest.raises(BudgetExceeded):
+        h.call("web.search", query="a")
+    assert calls["n"] == 2 and budget.used["search_calls"] == 2
