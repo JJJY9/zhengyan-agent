@@ -22,6 +22,8 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: uv sync --frozen
+      - name: Lint (ruff, correctness rules)
+        run: uv run ruff check src tests
       - name: Run tests
         run: uv run pytest -q
 

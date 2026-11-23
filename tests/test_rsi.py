@@ -1,6 +1,6 @@
 """RSI 一期：账本不可变、坏案例四要素、六道门禁、状态机（草稿 → 发布）、继承（档案记录版本）、一键回滚。"""
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
