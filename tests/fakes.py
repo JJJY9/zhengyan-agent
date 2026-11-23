@@ -97,12 +97,13 @@ class FakeLLM:
     """按 Schema 返回固定结构；从提示词里解析真实证据 id 与数值，模拟“只引用可见证据”。"""
 
     def __init__(self, wrong_number: bool = True, route_probs=(0.1, 0.8, 0.1), stakes="mid", uncertainty="low",
-                 mode="debate", challenge_severity="mid", ruling="rejected"):
+                 mode="debate", challenge_severity="mid", ruling="rejected", chair_severity=None, fail_challenges=False):
         self.calls: list[tuple[str, str]] = []
         self.prompts: dict[str, list[str]] = {}
         self.wrong_number = wrong_number
         self.route_probs, self.stakes, self.uncertainty = route_probs, stakes, uncertainty
         self.mode, self.challenge_severity, self.ruling = mode, challenge_severity, ruling
+        self.chair_severity, self.fail_challenges = chair_severity, fail_challenges
 
     def json(self, role, system, user, schema):
         self.calls.append((role, schema.__name__))
@@ -126,6 +127,8 @@ class FakeLLM:
         if schema is ExpertDraft:
             return self._expert(user), 200
         if schema is ChallengeSet:
+            if self.fail_challenges:
+                raise RuntimeError("反证服务不可用")
             target = re.findall(r"\[((?!red_team)\w+-c\d+) \|", user)
             ev = re.findall(r"\[(ev_\w+) \| [AB]级", user)
             return ChallengeSet(challenges=[ChallengeDraft(target_claim_id=target[0], kind="logic_gap", text="推理跳跃",
@@ -141,7 +144,7 @@ class FakeLLM:
             return ChairOutput(
                 summary="综合：业绩累计微增，估值处于区间内。", adopted_claim_ids=board + ["ghost-c9"],
                 rulings=[RulingDraft(challenge_id=c, verdict=self.ruling, reason="依据证据裁决",
-                                     severity=self.challenge_severity) for c in chs],
+                                     severity=self.chair_severity or self.challenge_severity) for c in chs],
                 synthesis_claims=[DraftClaim(text="多位专家的证据指向收入增速放缓。", kind="inference", evidence_ids=a_ids[:1])],
                 dissents=[Dissent(text="反证官认为库存风险被低估")], unknowns=["渠道库存数据"],
                 review_triggers=[ReviewTrigger(condition="三季报披露", reason="验证增速")],
