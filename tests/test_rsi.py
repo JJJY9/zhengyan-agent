@@ -183,3 +183,33 @@ def test_rsi_api_overview_and_transitions(repo, policy):
         assert [a["version"] for a in ov["lineage"]["lessons"]] == [1, 2]
         assert client.post("/api/rsi/rollback", json={"kind": "lessons", "reason": "太短"}).status_code == 409
         assert client.get("/api/watchlist").status_code == 200
+
+
+def test_bootstrap_tolerates_concurrent_init(repo, policy):
+    from advisor.rsi.ledger import baseline_content
+    ledger = Ledger(repo.db)
+    ledger.append_asset("lessons", baseline_content("lessons", policy),
+                        "初始基线：由 policies.yaml 导入的在用配置", "other", None)   # 竞争者的基线资产已写入
+
+    def boom(*a, **k):
+        raise LedgerError("并发：非首版资产必须声明 parent")
+
+    ledger.append_asset = boom                    # 模拟竞争：其余组件初始化时撞上并发
+    ledger.bootstrap(policy)                      # 修复前会抛 LedgerError
+    assert ledger.active_version("lessons") == 1  # 资产在但事件缺失时补记启用事件
+
+
+def test_frozen_replay_is_race_safe(repo, monkeypatch):
+    from advisor.rsi.evaluator import frozen_replay
+    ledger = Ledger(repo.db)
+    ledger.db.rsi_protocols.insert_one({"scenario": "S1", "replay_ids": ["a", "b"],
+                                        "hash": "h", "created_at": datetime.now(timezone.utc)})
+    real_find = ledger.db.rsi_protocols.find_one
+    calls = {"n": 0}
+
+    def stale(*a, **k):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_find(*a, **k)   # 第一次假装没看到（并发窗口）
+
+    monkeypatch.setattr(ledger.db.rsi_protocols, "find_one", stale)
+    assert frozen_replay(ledger, "S1", ["x", "y"]) == ["a", "b"]   # 撞唯一索引后回读已冻结的回放集

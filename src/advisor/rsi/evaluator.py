@@ -12,6 +12,7 @@ from statistics import mean
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
 
 from advisor.harness import Budget
 from advisor.rsi.ledger import Ledger
@@ -52,13 +53,17 @@ def _stat(values: list[float]) -> dict:
 
 
 def frozen_replay(ledger: Ledger, scenario: str, candidates: list[str]) -> list[str]:
-    """固定回放集：首次评测时冻结，此后不随数据增长而变化。"""
+    """固定回放集：首次评测时冻结，此后不随数据增长而变化（并发评测时以先写入者为准）。"""
     doc = ledger.db.rsi_protocols.find_one({"scenario": scenario})
     if doc:
         return doc["replay_ids"]
     ids = sorted(candidates)
-    ledger.db.rsi_protocols.insert_one({"scenario": scenario, "replay_ids": ids, "hash": _h(ids),
-                                        "created_at": datetime.now(timezone.utc)})
+    try:
+        ledger.db.rsi_protocols.insert_one({"scenario": scenario, "replay_ids": ids, "hash": _h(ids),
+                                            "created_at": datetime.now(timezone.utc)})
+    except DuplicateKeyError:                     # 另一个评测并发冻结了回放集：回读已冻结版本
+        doc = ledger.db.rsi_protocols.find_one({"scenario": scenario})
+        return doc["replay_ids"] if doc else ids
     return ids
 
 

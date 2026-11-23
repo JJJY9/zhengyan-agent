@@ -51,6 +51,7 @@ class Ledger:
         db.rsi_events.create_index([("ts", ASCENDING)])
         db.rsi_issues.create_index("fingerprint", unique=True)
         db.rsi_issues.create_index("id", unique=True)
+        db.rsi_protocols.create_index("scenario", unique=True)
 
     # ---------- 资产 ----------
     def append_asset(self, kind: AssetKind, content: dict, change_reason: str, created_by: str,
@@ -83,7 +84,7 @@ class Ledger:
 
     def active_version(self, kind: AssetKind) -> int | None:
         doc = self.db.rsi_events.find_one({"kind": kind, "action": {"$in": list(ACTIVATING)}},
-                                          sort=[("ts", DESCENDING), ("seq", DESCENDING)])
+                                          sort=[("ts", DESCENDING), ("_id", DESCENDING)])
         return doc["active_version"] if doc else None
 
     def active_asset(self, kind: AssetKind) -> Asset | None:
@@ -91,12 +92,27 @@ class Ledger:
         return self.get_asset(kind, v) if v is not None else None
 
     def bootstrap(self, policy, actor: str = "system") -> list[str]:
-        """为尚无资产的组件登记 v1 基线并启用。"""
+        """为尚无资产的组件登记 v1 基线并启用。
+
+        并发安全：多个请求同时初始化时，输掉竞争的一方容忍 LedgerError；
+        若基线资产已存在但启用事件缺失（上次初始化中断），补记事件。
+        """
         done = []
         for kind in ("lessons", "routing", "search"):
             if self.latest_version(kind) is None:
-                a = self.append_asset(kind, baseline_content(kind, policy), "初始基线：由 policies.yaml 导入的在用配置", actor, None)
-                self.event("bootstrap", actor, kind=kind, active_version=a.version, detail=f"{kind} v1 基线启用")
+                try:
+                    a = self.append_asset(kind, baseline_content(kind, policy),
+                                          "初始基线：由 policies.yaml 导入的在用配置", actor, None)
+                except LedgerError:
+                    pass                                  # 另一个请求抢先把基线写入了
+                else:
+                    self.event("bootstrap", actor, kind=kind, active_version=a.version, detail=f"{kind} v1 基线启用")
+                    done.append(kind)
+                    continue
+            latest = self.latest_version(kind)
+            if latest is not None and self.active_version(kind) is None:
+                self.event("bootstrap", actor, kind=kind, active_version=latest,
+                           detail=f"{kind} v{latest} 基线启用（补记启用事件）")
                 done.append(kind)
         return done
 
