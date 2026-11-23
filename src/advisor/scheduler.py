@@ -23,9 +23,17 @@ class Scheduler:
         self._stop.set()
 
     def tick(self) -> None:
-        alerts = self.services.watch.scan_all(log=log.info)
-        points = self.services.strategy.step_all(log=log.info)
-        log.info("定时任务：新提醒 %d，模拟盘推进 %d", len(alerts), len(points))
+        # 两个子系统各自兜底：订阅扫描失败不能拖累模拟盘推进（反之亦然）
+        try:
+            alerts = self.services.watch.scan_all(log=log.info)
+            log.info("定时任务：新提醒 %d", len(alerts))
+        except Exception:
+            log.exception("订阅扫描失败")
+        try:
+            points = self.services.strategy.step_all(log=log.info)
+            log.info("定时任务：模拟盘推进 %d", len(points))
+        except Exception:
+            log.exception("模拟盘推进失败")
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval_s):
