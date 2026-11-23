@@ -43,7 +43,7 @@ def unsubscribe(ticker: str, svc: Svc):
 
 @router.post("/scan")
 def scan_all(svc: Svc, jobs: Jobs):
-    return jobs.start(svc, "watch_scan", lambda log: [a.id for a in svc.watch.scan_all(log=log)])
+    return jobs.start(svc, "watch_scan", lambda log: [a.id for a in svc.watch.scan_all(log=log)], key="watch:scan")
 
 
 @router.post("/scan/{ticker}")

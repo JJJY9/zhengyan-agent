@@ -9,6 +9,13 @@ from advisor.rsi.models import KIND_LABEL
 router = APIRouter(prefix="/api/rsi")
 
 
+def _run_or_404(svc: Svc, run_id: str):
+    x = svc.rsi.ledger.get_run(run_id)
+    if x is None:
+        raise HTTPException(404, "候选不存在")
+    return x
+
+
 class ProposeIn(BaseModel):
     scenario: str
     issue_id: str | None = None
@@ -123,28 +130,33 @@ def collect(svc: Svc):
 def propose(body: ProposeIn, svc: Svc, jobs: Jobs):
     if body.scenario not in ("S1", "S2", "S3"):
         raise HTTPException(400, "scenario 只能是 S1/S2/S3")
-    return jobs.start(svc, "propose", lambda log: svc.rsi.propose(body.scenario, body.issue_id, OWNER))
+    return jobs.start(svc, "propose", lambda log: svc.rsi.propose(body.scenario, body.issue_id, OWNER),
+                      key=f"propose:{body.scenario}")
 
 
 @router.post("/runs/{run_id}/evaluate")
 def evaluate(run_id: str, svc: Svc, jobs: Jobs):
+    _run_or_404(svc, run_id)
     return jobs.start(svc, "evaluate", lambda log: svc.rsi.evaluate(run_id, OWNER, log), key=f"evaluate:{run_id}")
 
 
 @router.post("/runs/{run_id}/approve")
 def approve(run_id: str, body: NoteIn, svc: Svc):
+    _run_or_404(svc, run_id)
     with conflict_on(TransitionError):
         return svc.rsi.approve(run_id, OWNER, body.note).model_dump(mode="json", exclude={"content", "eval"})
 
 
 @router.post("/runs/{run_id}/reject")
 def reject(run_id: str, body: RejectIn, svc: Svc):
+    _run_or_404(svc, run_id)
     with conflict_on(TransitionError):
         return svc.rsi.reject(run_id, OWNER, body.reason).model_dump(mode="json", exclude={"content", "eval"})
 
 
 @router.post("/runs/{run_id}/release")
 def release(run_id: str, svc: Svc):
+    _run_or_404(svc, run_id)
     with conflict_on(TransitionError):
         return svc.rsi.release(run_id, OWNER).model_dump(mode="json", exclude={"content", "eval"})
 

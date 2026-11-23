@@ -23,6 +23,13 @@ class ReasonIn(BaseModel):
     reason: str = Field(min_length=2)
 
 
+def _card_or_404(svc: Svc, card_id: str, version: int | None = None):
+    v = svc.strategy.store.get(card_id, version)
+    if v is None:
+        raise HTTPException(404, "策略卡不存在")
+    return v
+
+
 def _summary(svc: Svc, v) -> dict:
     return v.model_dump(mode="json") | {"stats": svc.strategy.stats(v)}
 
@@ -57,6 +64,7 @@ def detail(card_id: str, version: int, svc: Svc):
 
 @router.post("/{card_id}/{version}/paper")
 def start_paper(card_id: str, version: int, svc: Svc):
+    _card_or_404(svc, card_id, version)
     with conflict_on(StrategyError):
         return svc.strategy.start_paper(card_id, version, OWNER).model_dump(mode="json")
 
@@ -64,28 +72,33 @@ def start_paper(card_id: str, version: int, svc: Svc):
 @router.post("/step")
 def step(svc: Svc, jobs: Jobs, day: date | None = None):
     """把所有模拟中的策略推进到今天（只能向前）。"""
-    return jobs.start(svc, "paper_step", lambda log: len(svc.strategy.step_all(day, log)))
+    return jobs.start(svc, "paper_step", lambda log: len(svc.strategy.step_all(day, log)), key="strategy:step")
 
 
 @router.post("/{card_id}/{version}/submit")
 def submit(card_id: str, version: int, svc: Svc):
+    _card_or_404(svc, card_id, version)
     with conflict_on(StrategyError, PaperError):
         return svc.strategy.submit(card_id, version, OWNER).model_dump(mode="json")
 
 
 @router.post("/{card_id}/{version}/approve")
 def approve(card_id: str, version: int, body: NoteIn, svc: Svc):
+    _card_or_404(svc, card_id, version)
     with conflict_on(StrategyError):
         return svc.strategy.approve(card_id, version, OWNER, body.note).model_dump(mode="json")
 
 
 @router.post("/{card_id}/{version}/reject")
 def reject(card_id: str, version: int, body: ReasonIn, svc: Svc):
+    _card_or_404(svc, card_id, version)
     with conflict_on(StrategyError):
         return svc.strategy.reject(card_id, version, OWNER, body.reason).model_dump(mode="json")
 
 
 @router.post("/{card_id}/rollback")
 def rollback(card_id: str, body: ReasonIn, svc: Svc):
+    if not svc.strategy.store.versions(card_id):
+        raise HTTPException(404, "策略卡不存在")
     with conflict_on(StrategyError):
         return svc.strategy.rollback(card_id, OWNER, body.reason).model_dump(mode="json")

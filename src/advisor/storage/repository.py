@@ -166,7 +166,9 @@ class Repository:
         return _clean(self.db.tasks.find_one({"task_id": task_id}))
 
     def list_tasks(self, limit: int = 30) -> list[dict]:
-        cur = self.db.tasks.find({}, projection={"_id": 0, "events": 0}).sort("created_at", DESCENDING).limit(limit)
+        """用户侧任务列表：评测等隔离命名空间的任务不出现（只在评测页可见）。"""
+        cur = self.db.tasks.find({"request.namespace": None}, projection={"_id": 0, "events": 0}) \
+            .sort("created_at", DESCENDING).limit(limit)
         return list(cur)
 
     # ---------- 工作记忆（研究记忆：计划、专家产出、质询；到期清理） ----------

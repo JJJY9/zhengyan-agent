@@ -98,3 +98,42 @@ def test_research_rejected_when_llm_not_configured(client):
         assert client.get("/api/dossiers").status_code == 200
     finally:
         svc.deps.llm = real
+
+
+def test_missing_resources_return_404(client):
+    assert client.post("/api/tasks/nope/resume", json={"approve": True}).status_code == 404
+    assert client.post("/api/tasks/nope/cancel").status_code == 404
+    assert client.post("/api/strategy/SC-999/1/paper").status_code == 404
+    assert client.post("/api/strategy/SC-999/1/approve", json={"note": ""}).status_code == 404
+    assert client.post("/api/strategy/SC-999/1/reject", json={"reason": "理由"}).status_code == 404
+    assert client.post("/api/strategy/SC-999/rollback", json={"reason": "回滚理由不少于十个字"}).status_code == 404
+    assert client.post("/api/rsi/runs/rsi_nope/approve", json={"note": ""}).status_code == 404
+    assert client.post("/api/rsi/runs/rsi_nope/reject", json={"reason": "理由"}).status_code == 404
+    assert client.post("/api/watch/alerts/al_nope/review").status_code == 404
+
+
+def test_task_list_hides_eval_namespace(client, service):
+    tid = service.start(ResearchRequest(question=f"复核 {CODE} 半年报业绩", as_of=as_of(), route="standard"),
+                        background=False, namespace="eval-test")
+    assert service.deps.repo.get_task(tid) is not None
+    ids = {t["task_id"] for t in client.get("/api/tasks").json()}
+    assert tid not in ids                                   # 评测任务不出现在用户任务列表
+
+
+def test_spa_fallback_survives_malformed_paths(client):
+    assert client.get("/%00").status_code < 500             # 含 NUL 的路径回落首页，而不是 500
+    assert client.get("/" + "a" * 5000).status_code < 500   # 超长路径同理
+
+
+def test_job_board_prunes_finished_jobs(monkeypatch):
+    from advisor.api.common import JobBoard
+
+    class Sync:
+        def submit(self, fn):
+            fn()
+
+    monkeypatch.setattr(JobBoard, "MAX_JOBS", 2)
+    board = JobBoard()
+    for _ in range(4):
+        board.start(Sync(), "x", lambda log: 1)
+    assert len(board.jobs) <= 2                             # 终态作业按插入顺序淘汰，内存有上限

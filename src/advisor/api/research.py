@@ -46,6 +46,8 @@ def task(task_id: str, svc: Svc):
 
 @router.post("/tasks/{task_id}/resume")
 def resume(task_id: str, body: ResumeIn, svc: Svc):
+    if svc.deps.repo.get_task(task_id) is None:
+        raise HTTPException(404, "任务不存在")
     try:
         svc.research.resume(task_id, body.approve)
     except ValueError as e:
@@ -55,6 +57,8 @@ def resume(task_id: str, body: ResumeIn, svc: Svc):
 
 @router.post("/tasks/{task_id}/cancel")
 def cancel(task_id: str, svc: Svc):
+    if svc.deps.repo.get_task(task_id) is None:
+        raise HTTPException(404, "任务不存在")
     status = svc.research.cancel(task_id)
     if status is None:
         raise HTTPException(409, "任务已结束，无法取消")

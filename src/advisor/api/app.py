@@ -119,7 +119,10 @@ def _mount_web(app: FastAPI) -> None:
     def spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404, "接口不存在")
-        file = (root / path).resolve()
-        if path and file.is_file() and file.is_relative_to(root):
-            return FileResponse(file)
-        return FileResponse(root / "index.html")
+        file = None
+        try:
+            file = (root / path).resolve()
+            ok = bool(path) and file.is_file() and file.is_relative_to(root)
+        except (ValueError, OSError):     # 含 NUL、超长路径等非法输入：回落首页，而不是 500
+            ok = False
+        return FileResponse(file if ok and file is not None else root / "index.html")
