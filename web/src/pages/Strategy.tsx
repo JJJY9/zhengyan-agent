@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, waitJob } from "../api";
 import { GateDots } from "../components/Rsi";
@@ -16,6 +16,8 @@ export default function Strategy() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState("");
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [form, setForm] = useState<null | { name: string; thesis: string; universe: string; entry: Rule[]; exit: Rule[];
     max_positions: number; stop_loss_pct: number; max_drawdown_limit: number; change_reason: string }>(null);
   useAskContext({ title: "策略与模拟盘", suggestions: ["PE 分位低一定意味着便宜吗？还要核对哪些口径"] }, []);
@@ -27,7 +29,7 @@ export default function Strategy() {
     setBusy(true); setError("");
     try {
       const { job_id } = await api.strategy.step();
-      const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "推进中…"));
+      const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "推进中…"), () => !alive.current);
       setLog(j.log.join("；") || "没有模拟中的策略");
     } catch (e) { setError((e as Error).message); }
     setBusy(false); load();

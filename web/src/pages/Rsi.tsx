@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, waitJob } from "../api";
 import { CompareChart, EventList, GateDots, RunStatus, SCEN } from "../components/Rsi";
@@ -26,6 +26,8 @@ export default function Rsi() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const [rb, setRb] = useState<{ kind: string; reason: string } | null>(null);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const load = useCallback(() => {
     Promise.all([api.rsi.overview(), api.rsi.runs(), api.rsi.issues(), api.rsi.events()])
@@ -47,7 +49,7 @@ export default function Rsi() {
     setBusy(scenario); setError("");
     try {
       const { job_id } = await api.rsi.propose(scenario);
-      const j = await waitJob(job_id, setJob);
+      const j = await waitJob(job_id, setJob, () => !alive.current);
       if (j.status === "done" && j.result) nav(`/rsi/runs/${j.result}`);
       else setError(j.error ?? "生成失败");
     } catch (e) { setError((e as Error).message); }

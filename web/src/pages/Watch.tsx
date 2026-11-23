@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api, waitJob } from "../api";
 import { ALERT_STATUS, EVENT_LABEL } from "../components/Personal";
@@ -19,6 +19,8 @@ export default function Watch() {
   const [error, setError] = useState("");
   const [dismiss, setDismiss] = useState<{ id: string; note: string } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useAskContext({ title: "订阅与复核", suggestions: ["新财报出来后，哪些旧结论最容易失效？"] }, []);
 
   const load = useCallback(() => {
@@ -35,7 +37,7 @@ export default function Watch() {
   };
   const scanAll = () => act("scan", async () => {
     const { job_id } = await api.watch.scanAll();
-    const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "扫描中…"));
+    const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "扫描中…"), () => !alive.current);
     setLog(j.log.join("；") || "没有订阅");
   });
   const review = (a: Alert) => act(a.id, async () => { const { task_id } = await api.watch.review(a.id); nav(`/tasks/${task_id}`); });
