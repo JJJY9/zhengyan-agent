@@ -7,6 +7,8 @@
 from datetime import date
 from typing import Any, Callable
 
+from pymongo.errors import DuplicateKeyError
+
 from advisor.contracts import Dossier
 from advisor.evidence import metric_facts
 from advisor.graph.deps import Deps
@@ -133,8 +135,13 @@ class PaperBook:
         point = NavPoint(card_id=card.card_id, version=card.version, date=day, cash=round(cash, 2),
                          nav=round(cash + sum(p.shares * p.price for p in held.values()), 2),
                          positions=list(held.values()), notes=notes)
+        # 唯一索引 (card_id, version, date) 充当幂等闸门：定时推进与手动推进并发时只允许一个写入。
+        # 先写净值再写成交：输掉竞争的一侧不产生重复成交（旧顺序会先把成交写两遍，再在净值处崩掉）。
+        try:
+            self.store.add_nav(point)
+        except DuplicateKeyError:
+            return self.store.navs_of(card.card_id, card.version)[-1]
         self.store.add_trades(trades)
-        self.store.add_nav(point)
         return point
 
 

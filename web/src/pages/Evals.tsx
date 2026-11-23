@@ -26,14 +26,21 @@ export default function Evals() {
   useEffect(() => { api.evals().then(setRuns); }, [msg]);
   useEffect(() => {
     if (!id) { setRun(null); return; }
+    let alive = true;
     let timer: number | undefined;
+    setRun(null);                  // 切换到别的评测先清空，避免旧轮询把内容写回来
     const load = async () => {
-      const r = await api.evalRun(id);
-      setRun(r);
-      if (r.status === "running") timer = window.setTimeout(load, 4000);
+      try {
+        const r = await api.evalRun(id);
+        if (!alive) return;
+        setRun(r);
+        if (r.status === "running") timer = window.setTimeout(load, 4000);
+      } catch {
+        if (alive) timer = window.setTimeout(load, 4000);   // 轮询失败稍后重试，不静默终止
+      }
     };
     load();
-    return () => window.clearTimeout(timer);
+    return () => { alive = false; window.clearTimeout(timer); };
   }, [id]);
 
   const startCompare = async () => {
@@ -220,10 +227,12 @@ function RoutingView({ run }: { run: EvalRun }) {
           <h3>温度校准 <span className="muted small">按 NLL 选温度；ECE 越低越可信</span></h3>
           <table className="table">
             <thead><tr><th>温度</th><th className="num">NLL</th><th className="num">ECE</th><th className="num">拒判率</th></tr></thead>
-            <tbody>{cal && Object.entries(cal.by_temperature).map(([t, m]) => (
+            <tbody>{cal?.by_temperature ? Object.entries(cal.by_temperature).map(([t, m]) => (
               <tr key={t} className={Number(t) === cal.best_temperature ? "best" : ""}>
                 <td>{t}</td><td className="num">{m.nll}</td><td className="num">{m.ece}</td><td className="num">{(m.abstain_rate * 100).toFixed(0)}%</td>
-              </tr>))}</tbody>
+              </tr>)) : (
+              <tr><td colSpan={4} className="muted">本次评测没有判别器的概率记录（全部走了规则或回退），未生成校准表</td></tr>
+            )}</tbody>
           </table>
         </div>
       </div>

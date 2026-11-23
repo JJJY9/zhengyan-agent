@@ -25,24 +25,34 @@ export default function DossierView() {
   const [tab, setTab] = useState<Tab>("overview");
   const [levels, setLevels] = useState<Set<string>>(new Set(["A", "B", "C"]));
   const [focus, setFocus] = useState<string | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ msg: string; at: string } | null>(null);
   const [diff, setDiff] = useState<DossierDiff | null>(null);
+  const at = `${key}/${version ?? ""}`;
 
   useEffect(() => {
+    let alive = true;
     api.versions(key).then((vs) => {
+      if (!alive) return;
       setVersions(vs);
       if (!version && vs.length) nav(`/dossiers/${key}/${vs[0].version}`, { replace: true });
-    }).catch((e) => setError(e.message));
+    }).catch((e) => { if (alive) setError({ msg: e.message, at: `${key}/` }); });
+    return () => { alive = false; };
   }, [key, version, nav]);
 
   useEffect(() => {
     if (!version) return;
-    setData(null);
+    let alive = true;
+    setData(null);        // 切版本先清空：旧版本的慢响应不得覆盖新版本
     setDiff(null);
+    setError(null);
     api.dossier(key, Number(version)).then((d) => {
+      if (!alive) return;
       setData(d);
-      if (d.dossier.parent_version) api.diff(key, Number(version)).then(setDiff).catch(() => setDiff(null));
-    }).catch((e) => setError(e.message));
+      if (d.dossier.parent_version) {
+        api.diff(key, Number(version)).then((x) => { if (alive) setDiff(x); }).catch(() => { if (alive) setDiff(null); });
+      }
+    }).catch((e) => { if (alive) setError({ msg: e.message, at: `${key}/${version}` }); });
+    return () => { alive = false; };
   }, [key, version]);
 
   const evMap = useMemo(() => new Map((data?.evidence ?? []).map((e) => [e.id, e])), [data]);
@@ -61,8 +71,8 @@ export default function DossierView() {
     if (tab === "evidence" && focus) document.getElementById(focus)?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [tab, focus]);
 
-  if (error) return <div className="page"><div className="error">{error}</div></div>;
-  if (!data) return <div className="page muted">加载中…</div>;
+  if (error && error.at === at) return <div className="page"><div className="error">{error.msg}</div></div>;
+  if (!data || String(data.dossier.version) !== String(version)) return <div className="page muted">加载中…</div>;
   const d = data.dossier;
   const verified = d.claims.filter((c) => c.status === "verified");
   const failed = d.claims.filter((c) => c.status === "disputed" || c.status === "rejected");

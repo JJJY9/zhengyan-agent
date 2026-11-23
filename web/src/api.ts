@@ -97,12 +97,16 @@ export const api = {
   },
 };
 
-/** 轮询后台作业（RSI 提议/评测、订阅扫描、模拟盘推进）直到结束。 */
-export async function waitJob(id: string, onLog?: (j: RsiJob) => void): Promise<RsiJob> {
+/** 轮询后台作业（RSI 提议/评测、订阅扫描、模拟盘推进）直到结束。
+ *  isCancelled 用于组件卸载后停止轮询：返回 true 时不再请求、不再回调。 */
+export async function waitJob(id: string, onLog?: (j: RsiJob) => void,
+                              isCancelled?: () => boolean): Promise<RsiJob> {
   for (;;) {
     const j = await api.job(id);
+    if (isCancelled?.()) return j;
     onLog?.(j);
     if (j.status !== "running") return j;
     await new Promise((r) => setTimeout(r, 1500));
+    if (isCancelled?.()) return j;
   }
 }

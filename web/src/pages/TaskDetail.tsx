@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { StatusBadge } from "../components/Badge";
@@ -19,30 +19,35 @@ export default function TaskDetail() {
   const [task, setTask] = useState<Task | null>(null);
   const [work, setWork] = useState<WorkingItem[]>([]);
   const [audit, setAudit] = useState<AuditRecord[] | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<{ msg: string; id: string } | null>(null);
   const [tick, setTick] = useState(0);
-
-  const refresh = useCallback(async () => {
-    const [t, w] = await Promise.all([api.task(id), api.workspace(id)]);
-    setTask(t);
-    setWork(w);
-    return t;
-  }, [id]);
+  const taskRef = useRef<Task | null>(null);
 
   useEffect(() => {
-    let timer: number | undefined;
     let alive = true;
+    let timer: number | undefined;
+    taskRef.current = null;
+    setTask(null);          // 切换任务时清空旧内容，避免旧任务的慢响应/旧数据挂在新任务页上
+    setWork([]);
+    setAudit(null);
+    setError(null);
     const load = async () => {
       try {
-        const t = await refresh();
-        if (alive && ACTIVE.has(t.status)) timer = window.setTimeout(load, 2000);
+        const [t, w] = await Promise.all([api.task(id), api.workspace(id)]);
+        if (!alive) return;
+        taskRef.current = t;
+        setTask(t);
+        setWork(w);
+        if (ACTIVE.has(t.status)) timer = window.setTimeout(load, 2000);
       } catch (e) {
-        setError((e as Error).message);
+        if (!alive) return;
+        if (!taskRef.current) setError({ msg: (e as Error).message, id });   // 首屏失败：错误页
+        else timer = window.setTimeout(load, 4000);                          // 轮询抖动：保留内容并重试
       }
     };
     load();
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [refresh, tick]);
+  }, [id, tick]);
 
   const decide = async (approve: boolean) => {
     await api.resume(id, approve);
@@ -53,8 +58,15 @@ export default function TaskDetail() {
     await api.cancel(id);
     setTick((x) => x + 1);
   };
+  const openAudit = async () => {
+    try {
+      setAudit(await api.audit(id));
+    } catch (e) {
+      setError({ msg: (e as Error).message, id });
+    }
+  };
 
-  if (error) return <div className="page"><div className="error">{error}</div></div>;
+  if (error && error.id === id) return <div className="page"><div className="error">{error.msg}</div></div>;
   if (!task) return <div className="page muted">加载中…</div>;
   const budget = task.result?.budget;
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
@@ -147,7 +159,7 @@ export default function TaskDetail() {
 
       <h2>运行明细 <span className="muted small">每一步调用了哪些数据工具和模型、用了多久，用于事后追查</span></h2>
       {audit === null ? (
-        <button onClick={async () => setAudit(await api.audit(id))}>展开运行明细</button>
+        <button onClick={openAudit}>展开运行明细</button>
       ) : <TraceView audit={audit} />}
     </div>
   );

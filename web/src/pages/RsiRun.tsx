@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, waitJob } from "../api";
 import { CompareChart, EventList, GateGrid, LessonView, RunStatus, SCEN } from "../components/Rsi";
@@ -17,6 +17,8 @@ export default function RsiRun() {
   const [reason, setReason] = useState("");
   const [job, setJob] = useState<RsiJob | null>(null);
   const [busy, setBusy] = useState(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   const load = useCallback(() => api.rsi.run(id).then(setData).catch((e) => setError(e.message)), [id]);
   useEffect(() => { load(); }, [load]);
@@ -27,7 +29,7 @@ export default function RsiRun() {
     setBusy(false);
   };
   const follow = async (jobId: string) => {
-    const j = await waitJob(jobId, setJob);
+    const j = await waitJob(jobId, setJob, () => !alive.current);
     if (j.status === "failed") throw new Error(j.error ?? "评测失败");
   };
   const evaluate = () => act(async () => follow((await api.rsi.evaluate(id)).job_id));

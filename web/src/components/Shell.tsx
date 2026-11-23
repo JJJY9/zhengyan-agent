@@ -151,6 +151,7 @@ const ACTIVE = new Set(["queued", "running"]);
 function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
   const [task, setTask] = useState<Task | null>(null);
   const [summary, setSummary] = useState<string>("");
+  const [tick, setTick] = useState(0);
   const doneRef = useRef(false);
   useEffect(() => {
     let alive = true, timer = 0;
@@ -169,12 +170,12 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
     };
     load();
     return () => { alive = false; window.clearTimeout(timer); };
-  }, [turn.task_id, onDone]);
+  }, [turn.task_id, onDone, tick]);
 
   const decide = async (approve: boolean) => {
     await api.resume(turn.task_id, approve);
     setTask((t) => t && { ...t, status: "running", interrupt: null });
-    setTimeout(async () => setTask(await api.task(turn.task_id)), 800);
+    setTick((x) => x + 1);        // 审批后任务回到 running：重新接上轮询，spinner 和结果才能继续更新
   };
   const events = task?.events ?? [];
   const shown = events.slice(-6);

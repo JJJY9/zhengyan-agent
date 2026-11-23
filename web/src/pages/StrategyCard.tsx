@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { GateGrid } from "../components/Rsi";
@@ -25,21 +25,32 @@ export default function StrategyCard() {
   const [note, setNote] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tick, setTick] = useState(0);
+  const keyRef = useRef("");
 
-  const load = useCallback(() => {
-    api.strategy.detail(id, v).then(setData).catch((e) => setError(e.message));
-    api.strategy.overview().then(setMeta).catch(() => undefined);
-  }, [id, v]);
-  useEffect(load, [load]);
+  useEffect(() => {
+    const key = `${id}/${v}`;
+    if (keyRef.current !== key) { keyRef.current = key; setData(null); }   // 切版本先清空，旧响应不得覆盖新版本
+    let alive = true;
+    setError("");
+    api.strategy.detail(id, v).then((x) => { if (alive) setData(x); })
+      .catch((e) => { if (alive) setError((e as Error).message); });
+    api.strategy.overview().then((x) => { if (alive) setMeta(x); })
+      .catch((e) => { if (alive) setError((e as Error).message); });
+    return () => { alive = false; };
+  }, [id, v, tick]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true); setError("");
     try { await fn(); } catch (e) { setError((e as Error).message); }
-    setBusy(false); load(); shell.refresh();
+    setBusy(false); setTick((x) => x + 1); shell.refresh();
   };
 
-  if (error && !data) return <div className="page"><div className="error">{error}</div></div>;
-  if (!data || !meta) return <div className="page muted">加载中…</div>;
+  if (!data || !meta || data.card.card_id !== id || data.card.version !== v) {
+    return error
+      ? <div className="page"><div className="error">{error}</div></div>
+      : <div className="page muted">加载中…</div>;
+  }
   const { card, navs, trades, versions, events } = data;
   const label = meta.status_label;
   const selfApproved = card.approvals.some((a) => a.self_approved);
