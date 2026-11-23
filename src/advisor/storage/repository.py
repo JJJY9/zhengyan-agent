@@ -1,5 +1,5 @@
 """MongoDB 存储：档案（版本链）、证据（只插入）、快照、审计、任务、缓存。"""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pymongo import ASCENDING, DESCENDING, MongoClient
@@ -37,6 +37,7 @@ class Repository:
         self.db.tasks.create_index("task_id", unique=True)
         self.db.audit.create_index([("task_id", ASCENDING), ("ts", ASCENDING)])
         self.db.cache.create_index("key", unique=True)
+        self.db.cache.create_index("expires_at", expireAfterSeconds=0)            # 过期缓存自动清理，防止无限增长
         self.db.working_memory.create_index([("task_id", ASCENDING), ("created_at", ASCENDING)])
         self.db.working_memory.create_index("expires_at", expireAfterSeconds=0)   # 研究记忆到期自动清理
         self.db.eval_runs.create_index("run_id", unique=True)
@@ -71,8 +72,27 @@ class Repository:
         doc = self.db.dossiers.find_one({"key": key}, sort=[("version", DESCENDING)], projection={"version": 1})
         return doc["version"] if doc else None
 
+    def latest_dossier_version_at(self, key: str, as_of: date) -> int | None:
+        """as_of 当天或之前研究时点最新的版本号（同日取版本号最大）。
+
+        回填研究（CLI --as-of）会产出「版本号更高但 as_of 更早」的档案，按版本号取
+        「上一版」会把未来档案注入提示词（前视污染），所以按 as_of 取。
+        """
+        rows = [v for v in self.list_dossier_versions(key) if str(v["as_of"])[:10] <= as_of.isoformat()]
+        if not rows:
+            return None
+        return max(rows, key=lambda v: (str(v["as_of"])[:10], v["version"]))["version"]
+
     def insert_dossier(self, dossier: Dossier) -> None:
         self.db.dossiers.insert_one(dossier.model_dump(mode="json"))
+
+    def try_insert_dossier(self, dossier: Dossier) -> bool:
+        """插入档案；同 key 并发提交撞版本号时返回 False（由调用方重算版本后重试）。"""
+        try:
+            self.db.dossiers.insert_one(dossier.model_dump(mode="json"))
+            return True
+        except DuplicateKeyError:
+            return False
 
     def get_dossier(self, key: str, version: int | None = None) -> Dossier | None:
         query: dict[str, Any] = {"key": key}

@@ -233,7 +233,10 @@ class Nodes:
         return upd
 
     def _load_prior(self, state: ResearchState) -> dict | None:
-        prev = self.d.repo.get_dossier(dossier_key(state))
+        """上一版档案：只取研究时点不晚于本次 as_of 的最新版本，避免回填研究被未来档案前视污染。"""
+        key = dossier_key(state)
+        version = self.d.repo.latest_dossier_version_at(key, date.fromisoformat(state["as_of"]))
+        prev = self.d.repo.get_dossier(key, version) if version is not None else None
         if prev is None:
             return None
         claims = [{"kind": c.kind, "text": c.text} for c in prev.claims
@@ -348,14 +351,15 @@ class Nodes:
         draft = state["draft"]
         quality = QualityResult.model_validate(state["quality"])
         key = dossier_key(state)
-        parent = self.d.repo.latest_dossier_version(key)
+        as_of = date.fromisoformat(state["as_of"])
+        parent = self.d.repo.latest_dossier_version_at(key, as_of)   # 版本链按研究时点，不把未来档案当上一版
         claims = [Claim.model_validate(c) for c in state["claims"]]
         used = {i for c in claims for i in c.evidence_ids}
         clue_ids = sorted(i for i, c in state.get("evidence", {}).items() if c["source_type"] == "web")
         status = "committed" if quality.decision == "pass" and not boundary else "partial"
         dossier = Dossier(
-            key=key, version=(parent or 0) + 1, parent_version=parent, ticker=state["ticker"],
-            name=state.get("company_name", ""), as_of=date.fromisoformat(state["as_of"]), question=state["question"],
+            key=key, version=0, parent_version=parent, ticker=state["ticker"],
+            name=state.get("company_name", ""), as_of=as_of, question=state["question"],
             route=state["route"], status=status, summary=draft.get("summary", ""), claims=claims,
             unknowns=list(dict.fromkeys(draft.get("unknowns", []) + state.get("unknowns_sys", []))),
             dissents=draft.get("dissents", []), review_triggers=draft.get("review_triggers", []),
@@ -369,8 +373,14 @@ class Nodes:
                                     + [x for r in (delib or {}).get("team", []) for x in r.get("lessons", [])])),
         )
         evidence = {c.id: c for c in _cards(state)}
-        report = render_report(dossier, evidence, Budget.from_dict(state["budget"]))
-        dossier = dossier.model_copy(update={"report_md": report})
-        self.d.repo.insert_dossier(dossier)
+        for attempt in range(3):
+            # 同 key 并发提交会同时算出版本号：撞唯一索引就重算版本、重渲染报告后重试
+            dossier = dossier.model_copy(update={"version": (self.d.repo.latest_dossier_version(key) or 0) + 1})
+            report = render_report(dossier, evidence, Budget.from_dict(state["budget"]))
+            dossier = dossier.model_copy(update={"report_md": report})
+            if self.d.repo.try_insert_dossier(dossier):
+                break
+            if attempt == 2:
+                raise RuntimeError(f"档案 {key} 版本分配连续冲突 3 次，提交失败")
         self._event(state, "commit", f"已保存为档案 v{dossier.version}（{DOSSIER_STATUS_LABEL.get(dossier.status, dossier.status)}）")
         return {"dossier_key": key, "version": dossier.version, "report_md": report, "status": "done"}

@@ -155,3 +155,18 @@ def test_decision_call_is_redacted_and_audited(policy):
     assert set(out["route"]) == {"quick", "standard", "deep"}
     assert "我的账户" not in h.decision_client.calls[0] and "[已脱敏]" in h.decision_client.calls[0]
     assert audit[-1]["kind"] == "decision" and audit[-1]["status"] == "ok" and audit[-1]["model"] == "fake-kev"
+
+
+def test_egress_phone_pattern_ignores_large_amounts(policy):
+    from advisor.harness.egress import EgressGuard
+    g = EgressGuard(policy.egress["sensitive_patterns"], policy.egress.get("trade_intent_patterns", []))
+    assert g.find_sensitive("营业收入 15000000000 元") == []                 # 150 亿不是手机号
+    text = "营收15000000000元，同比+3%"
+    assert g.redact(text) == text
+    assert g.find_sensitive("联系电话 13812345678") == ["13812345678"]      # 真手机号仍然命中
+    assert "[已脱敏]" in g.redact("电话13812345678")
+
+
+def test_cache_collection_has_ttl_index(repo):
+    info = repo.db.cache.index_information()
+    assert any("expires_at" in k and v.get("expireAfterSeconds") == 0 for k, v in info.items())
