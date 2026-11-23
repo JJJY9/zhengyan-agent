@@ -6,9 +6,8 @@
 """
 import hashlib
 import json
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Callable
@@ -22,8 +21,37 @@ from advisor.harness.errors import ApprovalRequired, BudgetExceeded, HarnessDeni
 from advisor.harness.policy import Policy
 from advisor.tracing import span
 
-_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="skill")
 MAX_RETRIES = 2
+
+
+class _SkillTimeout(Exception):
+    """单次调用的等待超时（区别于技能自身抛出的 TimeoutError）。"""
+
+
+def _call_with_timeout(fn: Callable[[], Any], timeout_s: float) -> Any:
+    """在独立守护线程里执行单次调用，超时只放弃等待。
+
+    不用共享线程池：Python 无法终止跑飞的线程，固定 16 线程的池子在多次超时后会被孤儿任务
+    占满，之后所有技能调用（包括纯本地的 compute.*）都会排队到超时，非守护池线程还会阻止
+    进程退出。独立守护线程最多留下一个孤儿，不拖垮其他调用，也不阻塞退出。
+    """
+    box: dict[str, Any] = {}
+    done = threading.Event()
+
+    def target() -> None:
+        try:
+            box["out"] = fn()
+        except BaseException as e:  # noqa: BLE001  原样带回调用线程
+            box["err"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=target, name="harness-skill", daemon=True).start()
+    if not done.wait(timeout_s):
+        raise _SkillTimeout(f"调用超时（{timeout_s}s）")
+    if "err" in box:
+        raise box["err"]
+    return box["out"]
 
 
 @dataclass
@@ -87,13 +115,9 @@ class Harness:
                 if key in self._cache:
                     record["status"] = "cache_hit"
                     return self._cache[key]
-                if skill.spec.budget_kind:
-                    self.budget.check(skill.spec.budget_kind)
-                out = self._run_with_retry(skill, inp)
+                out = self._run_with_retry(skill, inp)          # 预算检查与计费在每次真实调用时进行
                 if not isinstance(out, skill.spec.output_model):
                     raise HarnessDenied(f"{name} 输出不符合契约")
-                if skill.spec.budget_kind:
-                    self.budget.charge(skill.spec.budget_kind)
                 self._cache[key] = out
                 record["status"] = "ok"
                 return out
@@ -156,10 +180,12 @@ class Harness:
     def _run_with_retry(self, skill, inp: BaseModel) -> BaseModel:
         last: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
-            future = _POOL.submit(skill.run, inp)
+            if skill.spec.budget_kind:
+                self.budget.check(skill.spec.budget_kind)      # 每次真实调用前重新检查
+                self.budget.charge(skill.spec.budget_kind)     # 每次真实调用都计费：重试不是免费的
             try:
-                return future.result(timeout=skill.spec.timeout_s)
-            except FutureTimeout:
+                return _call_with_timeout(lambda: skill.run(inp), skill.spec.timeout_s)
+            except _SkillTimeout:
                 last = SkillFailed(f"{skill.spec.name} 超时（{skill.spec.timeout_s}s）", retryable=True)
             except SkillFailed as e:
                 last = e
