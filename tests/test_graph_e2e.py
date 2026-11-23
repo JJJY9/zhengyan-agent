@@ -1,4 +1,5 @@
 """端到端：虚构数据 + 假模型，验证 SOP、核验、质量门、版本链、人在环与审计。"""
+from datetime import date
 from advisor.contracts import ResearchRequest
 from tests.fakes import CODE, as_of
 
@@ -67,7 +68,8 @@ def test_sensitive_info_requires_consent(service):
 
     tid2, _ = run(service, question=f"我的持仓有 30万元 {CODE}，要不要卖？")
     service.resume(tid2, approve=True, background=False)
-    assert service.deps.repo.get_task(tid2)["status"] == "done"
+    t2 = service.deps.repo.get_task(tid2)
+    assert t2["status"] == "done", t2
     d = service.deps.repo.get_dossier(CODE)
     assert any("脱敏" in n for n in d.boundary_notes)
 
@@ -81,3 +83,39 @@ def test_trade_intent_gets_boundary_note(service):
 def test_unknown_ticker_fails_visibly(service, fakes):
     _, task = run(service, question="随便聊聊白酒")
     assert task["status"] == "failed" and "代码" in task["error"]
+
+
+def test_backfill_research_does_not_use_future_dossier(service, fakes):
+    fakes["llm"].wrong_number = False
+    tid1 = service.start(ResearchRequest(question=f"复核 {CODE} 10-18 研究", as_of=date(2026, 10, 18), route="standard"),
+                         background=False)
+    t1 = service.deps.repo.get_task(tid1)
+    assert t1["status"] == "done", t1
+    n = len(fakes["llm"].prompts.get("DraftOutput", []))
+    tid2 = service.start(ResearchRequest(question=f"复核 {CODE} 回填 06-01 研究", as_of=date(2026, 6, 1), route="standard"),
+                         background=False)
+    t2 = service.deps.repo.get_task(tid2)
+    assert t2["status"] == "done", t2
+    d = service.deps.repo.get_dossier(CODE)
+    assert d.version == 2 and d.parent_version is None        # 06-01 之前没有历史档案，不能把 10-18 的当上一版
+    assert all("<prior_dossier" not in p for p in fakes["llm"].prompts["DraftOutput"][n:])   # 不注入未来档案
+
+
+def test_commit_retries_on_version_collision(service, fakes, monkeypatch):
+    fakes["llm"].wrong_number = False
+    tid1 = service.start(ResearchRequest(question=f"复核 {CODE} 首次研究", as_of=as_of(), route="standard"), background=False)
+    assert service.deps.repo.get_task(tid1)["status"] == "done"
+    repo = service.deps.repo
+    real = repo.latest_dossier_version
+    calls = {"n": 0}
+
+    def stale(key):
+        calls["n"] += 1
+        return None if calls["n"] <= 2 else real(key)          # 模拟并发：先读到过期值，撞索引后重试
+
+    monkeypatch.setattr(repo, "latest_dossier_version", stale)
+    tid2 = service.start(ResearchRequest(question=f"复核 {CODE} 并发提交", as_of=as_of(), route="standard"), background=False)
+    task2 = service.deps.repo.get_task(tid2)
+    assert task2["status"] == "done", task2
+    d = repo.get_dossier(CODE)
+    assert d.version == 2 and d.parent_version == 1
