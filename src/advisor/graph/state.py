@@ -41,6 +41,7 @@ class ResearchState(TypedDict, total=False):
     expert_results: Annotated[list[dict], operator.add]
     usage: Annotated[list[dict], operator.add]            # 并行专家的预算使用，汇合时折算
     challenges: list[dict]
+    challenge_error: str | None                            # 反证环节失败原因（失败也要让质量门降级）
     responses: list[dict]
     deliberation: dict
     lessons_used: Annotated[list[str], operator.add]     # RSI：本次研究召回的经验卡

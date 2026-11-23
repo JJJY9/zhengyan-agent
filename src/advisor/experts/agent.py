@@ -268,9 +268,18 @@ def chair(h, deps, question: str, company: str, results: list[ExpertResult], bla
         ChairOutput, purpose="chair",
     )
     rulings_by = {r.challenge_id: r for r in out.rulings}
-    rulings = [Ruling(challenge_id=ch.id, **(rulings_by[ch.id].model_dump(exclude={"challenge_id"}) if ch.id in rulings_by
-                                            else {"verdict": "unresolved", "reason": "主席未裁决", "severity": ch.severity}))
-               for ch in challenges]
+    sev_order = {"low": 0, "mid": 1, "high": 2}
+    rulings: list[Ruling] = []
+    for ch in challenges:
+        draft = rulings_by.get(ch.id)
+        if draft is None:
+            rulings.append(Ruling(challenge_id=ch.id, verdict="unresolved", reason="主席未裁决", severity=ch.severity))
+            continue
+        data = draft.model_dump(exclude={"challenge_id"})
+        # 主席输出的 severity 默认 mid；不能让它把反证官标注的高危质询降级，
+        # 否则「高后果未决争议须人工复核」的门控会被绕过。取两者较高值。
+        data["severity"] = max(str(data.get("severity", "mid")), ch.severity, key=lambda s: sev_order.get(s, 1))
+        rulings.append(Ruling(challenge_id=ch.id, **data))
     # 质询成立或专家已承认的主张不得采纳：不让结论自己批准自己
     blocked = {ch.target_claim_id for ch in challenges
                if any(r.challenge_id == ch.id and r.verdict == "upheld" for r in rulings)

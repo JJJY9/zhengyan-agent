@@ -376,3 +376,40 @@ def test_plain_nat_returns_none():
     assert _plain(pd.NaT) is None
     assert _plain(pd.Timestamp("2026-08-15")) == "2026-08-15"
     assert _plain(float("nan")) is None
+
+
+# ---------- 审查修复：深研门控与路由 ----------
+def test_chair_cannot_downgrade_high_challenge(repo, policy):
+    svc = make_service(repo, policy, FakeLLM(challenge_severity="high", ruling="unresolved", chair_severity="mid"))
+    tid, task = run(svc, route="deep")
+    assert task["status"] == "waiting_approval" and task["interrupt"]["type"] == "review"
+    svc.resume(tid, approve=True, background=False)
+    d = repo.get_dossier(CODE)
+    unresolved = [r for r in d.deliberation["rulings"] if r["verdict"] == "unresolved"]
+    assert unresolved and all(r["severity"] == "high" for r in unresolved)      # 取反证官与主席的较高值
+
+
+def test_deep_upheld_challenge_marks_partial(repo, policy):
+    svc = make_service(repo, policy, FakeLLM(ruling="upheld"))
+    _, task = run(svc, route="deep")
+    assert task["status"] == "done"
+    d = repo.get_dossier(CODE)
+    assert d.quality.disputed >= 1
+    assert d.quality.decision == "partial" and d.status == "partial"           # 有被推翻的主张不得判 pass
+
+
+def test_cross_exam_failure_downgrades_dossier(repo, policy):
+    svc = make_service(repo, policy, FakeLLM(fail_challenges=True))
+    _, task = run(svc, route="deep")
+    assert task["status"] == "done"
+    d = repo.get_dossier(CODE)
+    assert d.status == "partial" and any("反证环节未完成" in n for n in d.quality.notes)
+
+
+def test_abstain_with_high_stakes_escalates_deep():
+    from advisor.routing import route_from_probs
+    cfg = {"temperature": 0.75, "abstain_below": 0.55, "deep_threshold_stakes": "high"}
+    d = route_from_probs({"quick": 0.40, "standard": 0.35, "deep": 0.25}, cfg, stakes="high", uncertainty="high")
+    assert d.abstain and d.route == "deep"                                     # 拒判时高后果+高分歧取深研
+    d2 = route_from_probs({"quick": 0.45, "standard": 0.35, "deep": 0.20}, cfg, stakes="low", uncertainty="low")
+    assert d2.abstain and d2.route == "standard"                               # 普通拒判仍按前两名升级

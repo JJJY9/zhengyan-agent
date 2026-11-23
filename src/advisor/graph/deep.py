@@ -11,6 +11,7 @@ from advisor.experts.specs import EXPERTS
 from advisor.graph.nodes import GATE_LABEL, MIN_VERIFIED_FACTS, Nodes, _cards
 from advisor.graph.state import ResearchState
 from advisor.harness import Budget
+from advisor.harness.errors import TaskCancelled
 
 MODE_LABEL = {"map_reduce": "各自取证后汇总", "debate": "专家互相质疑", "committee": "投资委员会讨论"}
 
@@ -88,9 +89,12 @@ class DeepNodes(Nodes):
         evidence = {c.id: c for c in _cards(state)}
         try:
             challenges = agent.cross_examine(h, self.d, board, red, evidence)
-        except Exception as e:  # noqa: BLE001  质询失败不阻断，但写入未知
+        except TaskCancelled:
+            raise
+        except Exception as e:  # noqa: BLE001  质询失败不阻断，但必须可见：记录失败并让质量门降级
             self._event(state, "cross_exam", f"反证官质疑环节失败：{e}")
-            challenges = []
+            return {"challenges": [], "challenge_error": f"{type(e).__name__}: {str(e)[:200]}",
+                    "budget": budget.to_dict()}
         self.d.repo.save_working(state["task_id"], "challenges", "round1", [c.model_dump(mode="json") for c in challenges])
         high = sum(c.severity == "high" for c in challenges)
         self._event(state, "cross_exam", f"反证官提出 {len(challenges)} 条质疑，其中影响较大的 {high} 条")
@@ -167,7 +171,11 @@ class DeepNodes(Nodes):
         notes = [f"专家失败：{'、'.join(failed)}"] if failed else []
         if delib.get("needs_human_review"):
             notes.append("存在高后果未决质询，提交前需人工复核")
-        ok = verified_facts >= MIN_VERIFIED_FACTS and not delib.get("needs_human_review") and len(delib.get("adopted_claim_ids", [])) >= 3
+        if state.get("challenge_error"):
+            notes.append(f"反证环节未完成（{state['challenge_error'][:80]}），不能视为已通过对抗检验")
+        # 被质询推翻的主张以 disputed 留在结论里：与标准流程一致，存在存疑不得判 pass
+        ok = (verified_facts >= MIN_VERIFIED_FACTS and not delib.get("needs_human_review")
+              and not state.get("challenge_error") and disputed == 0 and len(delib.get("adopted_claim_ids", [])) >= 3)
         q = QualityResult(decision="pass" if ok else "partial", verified=sum(c.status == "verified" for c in claims),
                           disputed=disputed, rejected=sum(c.status == "rejected" for c in claims),
                           gaps=[r["challenge_id"] for r in delib.get("rulings", []) if r["verdict"] == "unresolved"], notes=notes)

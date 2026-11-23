@@ -118,11 +118,16 @@ def route_from_probs(probs: dict[str, float], cfg: dict, stakes: str | None = No
     reasons: list[str] = []
     decision = RouteDecision(route=top, source="model", probs={k: round(v, 4) for k, v in probs.items()},
                              calibrated=cal, stakes=stakes, uncertainty=uncertainty, reasons=reasons)
+    force_deep = stakes == cfg.get("deep_threshold_stakes", "high") and uncertainty == "high" and top != "deep"
     if cal[top] < float(cfg.get("abstain_below", 0.55)):
         deeper = max(ranked[:2], key=ORDER.index)            # 拒判：在前两名里取更重的流程
+        if force_deep:                                        # 但高后果+高分歧时，保守方向就是深研
+            deeper = "deep"
         decision.route, decision.source, decision.abstain = deeper, "abstain", True
         decision.reasons = reasons + [f"最高校准概率 {cal[top]:.2f} 低于阈值，拒判并升级到 {deeper}"]
-    elif stakes == cfg.get("deep_threshold_stakes", "high") and uncertainty == "high" and top != "deep":
+        if force_deep:
+            decision.reasons.append("高后果且高分歧：保守方向取争议深研")
+    elif force_deep:
         decision.route = "deep"
         decision.reasons = reasons + ["高后果且高分歧：升级到争议深研"]
     if intent == "trade_execution" and decision.route == "quick":
