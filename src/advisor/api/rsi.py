@@ -80,7 +80,8 @@ def overview(svc: Svc):
         "issues": {sc: {"open": sum(i.scenario == sc and i.status == "open" for i in issues),
                         "total": sum(i.scenario == sc for i in issues)} for sc in ("S1", "S2", "S3")},
         "inheritance": [{"versions": g["_id"], "dossiers": g["n"],
-                         "lessons_used": sorted({x for xs in g["lessons_used"] for x in xs}), "last": g["last"]} for g in inherit],
+                         "lessons_used": sorted({x for xs in (g.get("lessons_used") or []) for x in (xs or [])}),
+                         "last": g["last"]} for g in inherit],
         "self_approved": sum(e.get("self_approved", False) for e in events if e["action"] == "approve"),
     }
 

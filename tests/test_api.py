@@ -1,5 +1,5 @@
 """API 冒烟：三期 / 四期路由、作业看板、单页应用不越出 dist 目录。"""
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -137,3 +137,29 @@ def test_job_board_prunes_finished_jobs(monkeypatch):
     for _ in range(4):
         board.start(Sync(), "x", lambda log: 1)
     assert len(board.jobs) <= 2                             # 终态作业按插入顺序淘汰，内存有上限
+
+
+def test_rsi_api_state_machine(client, service):
+    """RSI 候选的 API 全链路：批准 → 发布（追加资产）→ 一键回滚，无需模型调用。"""
+    from advisor.rsi.models import Run
+    from advisor.services import Services
+
+    svc = Services(service.deps, service)
+    svc.rsi.ledger.bootstrap(svc.deps.policy)
+    base = svc.rsi.ledger.active_asset("lessons")
+    now = datetime.now(timezone.utc)
+    run = Run(run_id="rsi_api_1", scenario="S1", kind="lessons", issue_ids=[], base_version=base.version,
+              content={"cards": base.content["cards"]}, diff={},
+              change_reason="API 冒烟：手工构造一个待审候选", direction="S1:class:smoke", status="review",
+              created_at=now, updated_at=now)
+    svc.rsi.ledger.insert_run(run)
+
+    assert client.get("/api/rsi/overview").status_code == 200
+    assert client.get("/api/rsi/runs").json()[0]["run_id"] == "rsi_api_1"
+    assert client.post("/api/rsi/runs/rsi_api_1/approve", json={"note": ""}).json()["status"] == "approved"
+    rel = client.post("/api/rsi/runs/rsi_api_1/release").json()
+    assert rel["status"] == "released" and rel["released_version"] == 2
+    assert svc.rsi.ledger.active_version("lessons") == 2
+    rb = client.post("/api/rsi/rollback", json={"kind": "lessons", "reason": "API 冒烟测试回滚：理由够十个字"}).json()
+    assert rb == {"kind": "lessons", "from": 2, "to": 1}
+    assert client.post("/api/rsi/runs/rsi_api_1/release").status_code == 409    # 已回滚的候选不能再次发布
