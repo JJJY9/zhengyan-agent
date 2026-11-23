@@ -130,3 +130,34 @@ class _SyncService:
     def start(self, req, **kw):
         req = req.model_copy(update={"as_of": date(2026, 10, 30)})
         return self.svc.start(req, background=False, **kw)
+
+
+def test_watch_review_single_flight(repo):
+    """并发双击「发起复核」：只有一个真正创建研究任务。"""
+    from datetime import datetime, timezone
+
+    from advisor.watch.scanner import WatchError, Watcher
+    from advisor.watch.store import WatchStore
+
+    store = WatchStore(repo.db)
+    store.alerts.insert_one({"id": "al_1", "ticker": "600999", "name": "示例酒业", "dossier_key": "600999",
+                             "dossier_version": 1, "fingerprint": "f1", "events": [], "affected": [],
+                             "status": "open", "created_at": datetime.now(timezone.utc)})
+    w = Watcher(None, store)
+    calls = []
+
+    class Svc:
+        def start(self, *a, **k):
+            calls.append(1)
+            return "t_x"
+
+    assert w.start_review("al_1", Svc()) == "t_x"
+    stale = store.get_alert("al_1").model_copy(update={"status": "open"})   # 并发请求读到的旧快照
+    real_get = store.get_alert
+    store.get_alert = lambda aid: stale
+    try:
+        with pytest.raises(WatchError, match="接管"):
+            w.start_review("al_1", Svc())
+    finally:
+        store.get_alert = real_get
+    assert len(calls) == 1

@@ -7,6 +7,8 @@
 from datetime import date, datetime, timezone
 from typing import Callable
 
+from pymongo.errors import DuplicateKeyError
+
 from advisor.graph.deps import Deps
 from advisor.strategy.gates import promotion_gates
 from advisor.strategy.models import STATUS_LABEL, NavPoint, StrategySpec, StrategyVersion
@@ -34,11 +36,17 @@ class StrategyBook:
         return v
 
     def _move(self, v: StrategyVersion, status: str, action: str, actor: str, detail: str, **extra) -> StrategyVersion:
-        v = v.model_copy(update={"status": status, **{k: x for k, x in extra.items() if k in StrategyVersion.model_fields}})
-        self.store.save(v)
-        self.store.event(action, actor, v.card_id, v.version, detail,
+        old = v.status
+        v2 = v.model_copy(update={"status": status, **{k: x for k, x in extra.items() if k in StrategyVersion.model_fields}})
+        try:
+            ok = self.store.save(v2, expect_status=old)      # 乐观锁：状态未变才写回，并发操作不会互相覆盖
+        except DuplicateKeyError:
+            raise StrategyError("同一张策略卡只能有一个已晋级版本") from None
+        if not ok:
+            raise StrategyError(f"{v.ref} 的状态已从「{STATUS_LABEL[old]}」被其他操作改变，请刷新后重试")
+        self.store.event(action, actor, v2.card_id, v2.version, detail,
                          **{k: x for k, x in extra.items() if k not in StrategyVersion.model_fields})
-        return v
+        return v2
 
     def promoted(self, card_id: str) -> StrategyVersion | None:
         return next(iter(self.store.versions(card_id, ["promoted"])), None)

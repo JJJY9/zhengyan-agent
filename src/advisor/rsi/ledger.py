@@ -152,9 +152,14 @@ class Ledger:
     def insert_run(self, run: Run) -> None:
         self.db.rsi_runs.insert_one(run.model_dump(mode="json"))
 
-    def save_run(self, run: Run) -> None:
+    def save_run(self, run: Run, expect_status: str | None = None) -> bool:
+        """整文档替换运行记录；expect_status 给定时以「状态未变」做乐观锁，返回是否写入成功。"""
         run.updated_at = _now()
-        self.db.rsi_runs.replace_one({"run_id": run.run_id}, run.model_dump(mode="json"))
+        q: dict = {"run_id": run.run_id}
+        if expect_status is not None:
+            q["status"] = expect_status
+        res = self.db.rsi_runs.replace_one(q, run.model_dump(mode="json"))
+        return res.matched_count == 1
 
     def get_run(self, run_id: str) -> Run | None:
         doc = self.db.rsi_runs.find_one({"run_id": run_id}, projection={"_id": 0})

@@ -213,3 +213,63 @@ def test_frozen_replay_is_race_safe(repo, monkeypatch):
 
     monkeypatch.setattr(ledger.db.rsi_protocols, "find_one", stale)
     assert frozen_replay(ledger, "S1", ["x", "y"]) == ["a", "b"]   # 撞唯一索引后回读已冻结的回放集
+
+
+def test_evaluate_discard_does_not_overwrite_manual_reject(rsi):
+    """评测在后台跑几分钟，期间人工拒绝优先：旧副本不得把 rejected 写回 review。"""
+    _, runner = rsi
+    runner.collect()
+    issue = next(i for i in runner.ledger.list_issues("S1") if i.source["ticker"] == "600001")
+    run = runner.propose("S1", issue.id)
+
+    import advisor.rsi.runner as runner_mod
+    real = runner_mod.evaluate_s1
+
+    def slow_eval(deps, ledger, r, base, cand, log=lambda m: None):
+        # 模拟评测耗时期间人工拒绝（直接改库，模拟请求线程的操作）
+        ledger.db.rsi_runs.update_one({"run_id": r.run_id}, {"$set": {"status": "rejected"}})
+        return real(deps, ledger, r, base, cand, log)
+
+    import pytest as _pytest
+    _pytest.MonkeyPatch().setattr(runner_mod, "evaluate_s1", slow_eval)
+    try:
+        out = runner.evaluate(run.run_id)
+    finally:
+        runner_mod.evaluate_s1 = real
+    assert out is not None and out.status == "rejected"
+    assert runner.ledger.get_run(run.run_id).status == "rejected"
+    assert any(e["action"] == "evaluate.discard" for e in runner.ledger.list_events())
+
+
+def test_transition_conflict_when_status_changed_underneath(rsi):
+    """状态机乐观锁：旧副本不能覆盖已被其他操作改变的状态。"""
+    _, runner = rsi
+    runner.collect()
+    run = runner.propose("S1", next(i.id for i in runner.ledger.list_issues("S1")))
+    stale = runner.ledger.get_run(run.run_id)          # draft 副本
+    runner.reject(run.run_id, "owner", "人工拒绝")
+    with pytest.raises(TransitionError):
+        runner._move(stale, "review", "submit", "owner", "并发提交")
+
+
+def test_compare_invalid_route_records_error_and_finishes(rsi):
+    from advisor.evals.compare import run_compare
+    svc, _ = rsi
+    cases = [{"id": "c1", "question": f"复核 {CODE} 半年报业绩", "ticker": CODE, "as_of": str(as_of())}]
+    rid = run_compare(svc, cases, ["bogus"])
+    doc = svc.deps.repo.get_eval(rid)
+    assert doc["status"] == "done" and doc["results"][0].get("error")     # 不卡在 running
+
+
+def test_compare_unexpected_crash_marks_failed(rsi, monkeypatch):
+    from advisor.evals import compare as cmp
+    svc, _ = rsi
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cmp, "summarize", boom)
+    rid = cmp.run_compare(svc, [{"id": "c1", "question": f"复核 {CODE}", "ticker": CODE, "as_of": str(as_of())}],
+                          ["standard"])
+    doc = svc.deps.repo.get_eval(rid)
+    assert doc["status"] == "failed" and "boom" in doc.get("error", "")

@@ -145,3 +145,22 @@ def test_paper_step_is_idempotent_under_race(services, monkeypatch):
     again = book.paper.step(v, day)                                     # 修复前：重复写成交后在净值处抛错
     assert again.date == first.date and again.nav == first.nav
     assert len(book.store.list_trades(v.card_id, v.version)) == trades_before
+
+
+def test_strategy_transition_uses_optimistic_lock(services):
+    book = services.strategy
+    v = book.create(spec(), "owner", "并发状态机测试：旧副本不得覆盖新状态")
+    stale = book.store.get(v.card_id, 1)
+    book.reject(v.card_id, 1, "owner", "人工拒绝")
+    with pytest.raises(StrategyError):
+        book._move(stale, "rejected", "reject", "owner", "并发推进")
+
+
+def test_only_one_promoted_version_per_card(services):
+    from pymongo.errors import DuplicateKeyError
+    book = services.strategy
+    v1 = book.create(spec(), "owner", "唯一晋级约束测试第一版本")
+    v2 = book.create(spec(name="另一个策略"), "owner", "唯一晋级约束测试第二版本", v1.card_id)
+    book.store.save(v1.model_copy(update={"status": "promoted"}))
+    with pytest.raises(DuplicateKeyError):
+        book.store.save(v2.model_copy(update={"status": "promoted"}))

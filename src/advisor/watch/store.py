@@ -58,6 +58,12 @@ class WatchStore:
         doc = self.alerts.find_one({"id": alert_id}, projection={"_id": 0})
         return Alert.model_validate(doc) if doc else None
 
+    def try_start_review(self, alert_id: str) -> bool:
+        """原子地把「待处理」提醒切到复核中：并发双击/多标签页只有一个能真正发起复核。"""
+        doc = self.alerts.find_one_and_update({"id": alert_id, "status": "open"},
+                                              {"$set": {"status": "reviewing"}})
+        return doc is not None
+
     def list_alerts(self, ticker: str | None = None, status: str | None = None, limit: int = 100) -> list[Alert]:
         q = {k: v for k, v in (("ticker", ticker), ("status", status)) if v}
         cur = self.alerts.find(q, projection={"_id": 0}).sort("created_at", DESCENDING).limit(limit)
