@@ -135,6 +135,14 @@ class Repository:
         fields["updated_at"] = _now()
         self.db.tasks.update_one({"task_id": task_id}, {"$set": fields})
 
+    def try_resume_task(self, task_id: str) -> bool:
+        """原子地把「待审批」任务切到运行中；并发双击/客户端重试只有一个能成功。"""
+        doc = self.db.tasks.find_one_and_update(
+            {"task_id": task_id, "status": "waiting_approval"},
+            {"$set": {"status": "running", "interrupt": None, "updated_at": _now()}},
+        )
+        return doc is not None
+
     def push_event(self, task_id: str, node: str, message: str) -> None:
         self.db.tasks.update_one(
             {"task_id": task_id},
