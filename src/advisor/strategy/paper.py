@@ -30,11 +30,17 @@ class PaperBook:
 
     # ---------- 信号：当天可见的事实 ----------
     def dossier_at(self, ticker: str, day: date) -> Dossier | None:
-        """当天之前（含）研究时点最新的档案版本。"""
-        for v in self.deps.repo.list_dossier_versions(ticker):
-            if str(v["as_of"])[:10] <= day.isoformat():
-                return self.deps.repo.get_dossier(ticker, v["version"])
-        return None
+        """当天之前（含）研究时点最新的档案版本。
+
+        版本号与 as_of 不一定同序：CLI --as-of 回填会产出「版本号更高但 as_of 更早」的档案，
+        因此按 as_of（同日再按版本号）取最新，而不是按版本号取第一个。
+        """
+        candidates = [v for v in self.deps.repo.list_dossier_versions(ticker)
+                      if str(v["as_of"])[:10] <= day.isoformat()]
+        if not candidates:
+            return None
+        latest = max(candidates, key=lambda v: (str(v["as_of"])[:10], v["version"]))
+        return self.deps.repo.get_dossier(ticker, latest["version"])
 
     def facts(self, h, ticker: str, day: date) -> tuple[dict[str, Any], Dossier | None, list[str]]:
         d = self.dossier_at(ticker, day)
