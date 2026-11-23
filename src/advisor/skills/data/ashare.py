@@ -32,7 +32,8 @@ def _plain(v: Any) -> Any:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return None
     if hasattr(v, "isoformat"):
-        return v.isoformat()[:10]
+        s = str(v.isoformat())
+        return s[:10] if len(s) >= 10 and s[:4].isdigit() else None   # pandas NaT 的 isoformat 是 "NaT"
     if isinstance(v, float):
         return repr(v)          # 保留精度，转 Decimal 时不经二进制误差放大
     return str(v) if not isinstance(v, (int, str)) else v

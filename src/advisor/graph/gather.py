@@ -59,9 +59,10 @@ def gather_web(h, deps, queries: list[str], as_of: date, route: str, max_fetch: 
             log(f"一篇网页原文没读到（{hit.url}），跳过：{e}")
     for cid, hit in reps.items():
         raw = fetched.get(hit.url)
-        content, sus_c = sanitize(raw or hit.summary or hit.snippet, max_chars=20000)
+        snapshot = raw if (raw is not None and raw.strip()) else None    # 空正文不算抓到了快照
+        content, sus_c = sanitize(snapshot or hit.summary or hit.snippet, max_chars=20000)
         excerpt, sus_e = sanitize(hit.summary or hit.snippet or content, max_chars=800)
-        level, caveats = grade_web(hit, raw is not None, as_of, b_min)
+        level, caveats = grade_web(hit, snapshot is not None, as_of, b_min)
         if sus_c or sus_e:
             level = "C"
             caveats.append("检测到疑似指令文本，已剔除并降为线索")

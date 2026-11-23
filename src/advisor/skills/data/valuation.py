@@ -22,7 +22,10 @@ class ValuationIn(BaseModel):
 
 
 def _d(s: str | None) -> date | None:
-    return date.fromisoformat(s[:10]) if s else None
+    try:
+        return date.fromisoformat(s[:10]) if s else None
+    except ValueError:          # 数据源偶发 "NaT" 等脏值：当作缺失，不让整个技能失败
+        return None
 
 
 def _latest(points: list[tuple[date, Decimal]], day: date) -> Decimal | None:
@@ -79,13 +82,13 @@ def build_valuation_skill(source: AShareSource, factory: EvidenceFactory) -> Ski
             Metric(name="归母净利润(TTM)", field="np_ttm", value=np_now, unit="元", period=period, basis="ttm",
                    note="本期累计+上年年报-上年同期累计"),
         ]
+        pe_caveats: list[str] = []
         if np_now > 0:
             pe_now = mcap / np_now
             metrics.append(Metric(name="市盈率PE(TTM)", field="pe_ttm", value=q(pe_now), unit="倍", period=period, basis="ratio"))
         else:
             pe_now = None
-            metrics.append(Metric(name="市盈率PE(TTM)", field="pe_ttm", value=Decimal(0), unit="倍", period=period, basis="ratio",
-                                  note="TTM 净利润为负，PE 无意义"))
+            pe_caveats.append("TTM 净利润为负，PE 不适用（未给出 pe_ttm，避免 0 被当作真实倍数）")
         if eq_now and eq_now > 0:
             metrics.append(Metric(name="市净率PB(MRQ)", field="pb_mrq", value=q(mcap / eq_now), unit="倍", period=period, basis="ratio"))
         pes = [v for _, v in series]
@@ -112,7 +115,7 @@ def build_valuation_skill(source: AShareSource, factory: EvidenceFactory) -> Ski
             published_at=datetime(last_day.year, last_day.month, last_day.day, tzinfo=timezone.utc),
             excerpt="；".join(f"{m.name} {m.value}{m.unit}" for m in metrics[:6]), metrics=metrics,
             caveats=["股数按股本/面值 1 元折算", "历史市值用前复权价格，仅作相对比较",
-                     "PE 区间只覆盖窗口期，不代表合理估值", "情景只改变估值倍数，盈利假设不变，不是预测"],
+                     "PE 区间只覆盖窗口期，不代表合理估值", "情景只改变估值倍数，盈利假设不变，不是预测"] + pe_caveats,
             skill="valuation.snapshot", skill_version="1.0.0",
         )
         return CardsOut(cards=[card])

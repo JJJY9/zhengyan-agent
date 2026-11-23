@@ -43,3 +43,16 @@ def test_factory_snapshot_and_stable_id():
     c1, c2 = f.make("content", **kw), f.make("content", **kw)
     assert c1.id == c2.id and store[c1.snapshot_hash] == "content"
     assert f.make("other", **kw).id != c1.id
+
+
+def test_clusters_do_not_merge_empty_text_hits():
+    a = hit(title="新闻一", url="https://a.com/1", summary="", snippet="")
+    b = hit(title="新闻二", url="https://b.com/2", summary="", snippet="")
+    c = hit(title="", url="https://c.com/3", summary="", snippet="")
+    cl = assign_clusters([a, b, c])
+    assert len({cl[a.url], cl[b.url], cl[c.url]}) == 3          # 没摘要的不同来源不能聚成一簇
+
+    d = hit(title="同一标题", url="https://d.com/1", summary="")
+    e = hit(title="同一标题", url="https://e.com/2", summary="")
+    cl2 = assign_clusters([d, e])
+    assert cl2[d.url] == cl2[e.url]                              # 标题相同仍判为同一事件

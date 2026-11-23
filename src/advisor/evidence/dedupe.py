@@ -39,14 +39,21 @@ def _norm_title(title: str) -> str:
 
 
 def assign_clusters(hits: list[SearchHit], threshold: int = 10) -> dict[str, str]:
-    """返回 url -> cluster_id。标题相同或正文指纹接近视为同一事件。"""
-    reps: list[tuple[str, str, int]] = []   # (cluster_id, norm_title, simhash)
+    """返回 url -> cluster_id。标题相同或正文指纹接近视为同一事件。
+
+    空标题/空正文不参与相似判断：否则所有「只有链接没有摘要」的结果会因指纹相同被
+    误聚成一簇，gather 只保留一个代表，独立来源被当成转载丢掉。
+    """
+    reps: list[tuple[str, str, int | None]] = []   # (cluster_id, norm_title, simhash)
     result: dict[str, str] = {}
     for hit in sorted(hits, key=lambda h: (-h.authority, -h.rerank_score)):
         title = _norm_title(hit.title)
-        sh = simhash((hit.summary or hit.snippet)[:400])
+        body = re.sub(r"\s+", "", (hit.summary or hit.snippet)[:400])
+        sh = simhash(body) if body else None
         for cid, t, s in reps:
-            if title == t or hamming(sh, s) <= threshold:
+            same_title = bool(title) and title == t
+            same_body = sh is not None and s is not None and hamming(sh, s) <= threshold
+            if same_title or same_body:
                 result[hit.url] = cid
                 break
         else:
