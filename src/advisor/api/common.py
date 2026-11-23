@@ -1,4 +1,5 @@
 """各路由共用：服务容器注入、后台作业看板、业务错误 → HTTP 状态码。"""
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -19,20 +20,39 @@ Svc = Annotated[Services, Depends(get_services)]
 
 
 class JobBoard:
-    """耗时操作（RSI 提议/评测、订阅扫描、模拟盘推进）在后台线程执行，前端轮询日志。"""
+    """耗时操作（RSI 提议/评测、订阅扫描、模拟盘推进）在后台线程执行，前端轮询日志。
+
+    并发安全：start/running/get 都用锁保护（FastAPI 同步端点在线程池里真并发）；
+    终态作业按插入顺序淘汰，只保留最近 MAX_JOBS 条，进程内存不会随使用时长线性增长。
+    """
+
+    MAX_JOBS = 200
 
     def __init__(self):
         self.jobs: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def _running_locked(self, key: str) -> dict | None:
+        return next((j for j in self.jobs.values() if j.get("key") == key and j["status"] == "running"), None)
+
+    def _prune_locked(self) -> None:
+        overflow = len(self.jobs) - self.MAX_JOBS
+        if overflow <= 0:
+            return
+        for k in [k for k, j in list(self.jobs.items()) if j["status"] != "running"][:overflow]:
+            self.jobs.pop(k, None)
 
     def start(self, svc: Services, kind: str, fn: Callable[[Callable[[str], None]], object],
               key: str | None = None) -> dict:
         """key 相同的作业还在跑时不重复启动，直接返回那一个（刷新页面后重复点击不会并行跑两次）。"""
-        if key and (existing := self.running(key)):
-            return {"job_id": existing["job_id"]}
-        jid = "job_" + uuid.uuid4().hex[:8]
-        job = {"job_id": jid, "kind": kind, "key": key, "status": "running", "log": [], "result": None, "error": None,
-               "started_at": datetime.now(timezone.utc)}
-        self.jobs[jid] = job
+        with self._lock:
+            if key and (existing := self._running_locked(key)):
+                return {"job_id": existing["job_id"]}
+            jid = "job_" + uuid.uuid4().hex[:12]
+            job = {"job_id": jid, "kind": kind, "key": key, "status": "running", "log": [], "result": None,
+                   "error": None, "started_at": datetime.now(timezone.utc)}
+            self.jobs[jid] = job
+            self._prune_locked()
 
         def run():
             try:
@@ -44,12 +64,15 @@ class JobBoard:
         return {"job_id": jid}
 
     def running(self, key: str) -> dict | None:
-        return next((j for j in self.jobs.values() if j.get("key") == key and j["status"] == "running"), None)
+        with self._lock:
+            return self._running_locked(key)
 
     def get(self, job_id: str) -> dict:
-        if job_id not in self.jobs:
+        with self._lock:
+            job = self.jobs.get(job_id)
+        if job is None:
             raise HTTPException(404, "作业不存在")
-        return self.jobs[job_id]
+        return job
 
 
 def get_jobs(request: Request) -> JobBoard:
