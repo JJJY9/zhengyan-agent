@@ -135,7 +135,7 @@ def test_llm_redacts_and_charges(policy):
     seen = {}
 
     class LLM:
-        def json(self, role, system, user, schema):
+        def json(self, role, system, user, schema, max_tokens=None):
             seen["user"] = user
             return Out(n=1), 40
 
@@ -170,3 +170,21 @@ def test_egress_phone_pattern_ignores_large_amounts(policy):
 def test_cache_collection_has_ttl_index(repo):
     info = repo.db.cache.index_information()
     assert any("expires_at" in k and v.get("expireAfterSeconds") == 0 for k, v in info.items())
+
+
+def test_llm_completion_capped_by_remaining_tokens(policy):
+    seen = {}
+
+    class LLM:
+        def json(self, role, system, user, schema, max_tokens=None):
+            seen["max_tokens"] = max_tokens
+            return Out(n=1), 5
+
+    h, _, _ = make(policy, [])                     # 默认 tokens 上限 100
+    h.llm_client = LLM()
+    h.llm("draft", "s", "u", Out, purpose="x")
+    assert seen["max_tokens"] == 100                # 剩余不足：按剩余额度封顶
+    h2, _, _ = make(policy, [], limits={"tokens": 20000, "wall_clock_s": 60})
+    h2.llm_client = LLM()
+    h2.llm("draft", "s", "u", Out, purpose="x")
+    assert seen["max_tokens"] == 8192               # 预算充足：封顶 8192，不放大模型默认输出长度

@@ -190,8 +190,11 @@ class Harness:
             try:
                 self.check_cancelled()
                 self.budget.check("tokens", 1)
+                # 单次调用按剩余额度封顶：专家预算只够 123 tokens 时，模型不可能一次写出几十万 token，
+                # 否则一个超长调用就会吃掉留给质询/主席的预留预算（任务在付了全部专家成本后失败）
+                cap = max(1, int(min(self.budget.remaining("tokens"), 8192)))
                 obj, usage = self.llm_client.json(
-                    role=role, system=system, user=self.egress.redact(user), schema=schema
+                    role=role, system=system, user=self.egress.redact(user), schema=schema, max_tokens=cap
                 )
                 self.budget.charge("tokens", usage)
                 record.update(status="ok", tokens=usage)
