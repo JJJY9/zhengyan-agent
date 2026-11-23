@@ -79,3 +79,29 @@ def test_calc_lineage_counts_as_support():
     ev = {**EV, "k": calc}
     claim = Claim(id="x", text="营业收入907.03亿元，净利率49.08%", kind="fact", evidence_ids=["k"])
     assert verify_claim(claim, ev, AS_OF).status == "verified"
+
+
+def test_sign_direction_must_match_evidence():
+    assert v("营业收入同比上升1.21%", ["a"]).status == "disputed"      # 证据是 -1.21%
+    assert v("营业收入同比下降1.21%", ["a"]).status == "verified"
+
+
+def test_negative_amount_requires_direction():
+    loss = card("n", metrics=[Metric(name="归母净利润", field="NP", value=Decimal("-5000000000"), unit="元",
+                                     period="2026-06-30", basis="cumulative")])
+    ev = {**EV, "n": loss}
+    wrong = verify_claim(Claim(id="x", text="归母净利润50亿元", kind="fact", evidence_ids=["n"]), ev, AS_OF)
+    assert wrong.status == "disputed"                                  # 证据是 -50 亿，方向相反
+    right = verify_claim(Claim(id="y", text="归母净利润亏损50亿元", kind="fact", evidence_ids=["n"]), ev, AS_OF)
+    assert right.status == "verified"
+
+
+def test_year_must_match_metric_period():
+    assert v("2025年毛利率94.06%", ["a"]).status == "verified"
+    out = v("2025年营业收入907.03亿元", ["a"])                        # 营收指标只有 2026 期
+    assert out.status == "disputed" and "复算" in out.verify_notes[0]
+
+
+def test_unitless_decimal_is_recomputed():
+    assert v("上半年营业收入907.03", ["a"]).status == "verified"       # 按亿刻度匹配 907.03 亿
+    assert v("上半年营业收入950.00", ["a"]).status == "disputed"
