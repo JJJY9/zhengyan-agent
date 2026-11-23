@@ -44,14 +44,31 @@ class DeepSeekTools:
         return self._post("/v1/tools/fetch", {"url": url}, self._fetch_bucket)
 
 
+def _host(url_or_host: str) -> str:
+    """URL 或裸域名 → 规范化主机名：去 userinfo/端口、小写、去尾点。
+
+    必须用 urlparse().hostname 而不是手拆 netloc：`https://stcn.com:443@evil.com/x`
+    的 netloc 是 `stcn.com:443@evil.com`，手拆会把 userinfo 当成主机名放行。
+    """
+    s = (url_or_host or "").strip()
+    if "://" not in s:
+        s = "https://" + s
+    try:
+        return (urlparse(s).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
+
+
 def host_matches(url: str, domains: tuple[str, ...]) -> bool:
-    host = urlparse(url).netloc.lower().split(":")[0]
-    return any(host == d or host.endswith("." + d) for d in domains)
+    host = _host(url)
+    return bool(host) and any(
+        host == d or host.endswith("." + d) for d in (x.strip().lower().rstrip(".") for x in domains)
+    )
 
 
 def fetch_allowlist(policy, params: dict) -> tuple[str, ...]:
     """抓取白名单 = sites.yaml + RSI 检索模板里经人工批准追加的站点（只能追加，不能删减黑名单）。"""
-    extra = tuple(d for d in params.get("fetch_allow_add", []) if d not in policy.block_sites)
+    extra = tuple(d for d in params.get("fetch_allow_add", []) if d and not host_matches(d, policy.block_sites))
     return policy.fetch_allow + extra
 
 
@@ -111,14 +128,18 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
             raw = tools.search(final_query, inp.count)
             if repo:
                 repo.cache_set(key, raw, ttl)
-        hits, dropped = [], {"blocked_site": 0, "after_as_of": 0, "low_relevance": 0}
+        hits, dropped = [], {"blocked_site": 0, "after_as_of": 0, "low_relevance": 0, "invalid_row": 0}
         for r in raw:
-            hit = SearchHit(
-                title=r.get("title") or "", url=r.get("url") or "", site_name=r.get("site_name"),
-                date=_parse_date(r.get("date")), authority=int(r["authority"]) if r.get("authority") is not None else -1,
-                rerank_score=float(r.get("rerank_score") or 0), summary=r.get("summary") or "",
-                snippet=r.get("snippet") or "", query=inp.query,
-            )
+            try:
+                hit = SearchHit(
+                    title=r.get("title") or "", url=r.get("url") or "", site_name=r.get("site_name"),
+                    date=_parse_date(r.get("date")), authority=int(r["authority"]) if r.get("authority") is not None else -1,
+                    rerank_score=float(r.get("rerank_score") or 0), summary=r.get("summary") or "",
+                    snippet=r.get("snippet") or "", query=inp.query,
+                )
+            except (TypeError, ValueError):     # 单条脏数据不拖垮整次搜索；原始结果已入缓存，下次同样跳过
+                dropped["invalid_row"] += 1
+                continue
             if not hit.url or host_matches(hit.url, policy.block_sites):
                 dropped["blocked_site"] += 1
             elif hit.date and hit.date.date() > inp.as_of:
@@ -130,8 +151,10 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
         return SearchOut(final_query=final_query, hits=hits, dropped=dropped)
 
     def fetch(inp: FetchIn) -> FetchOut:
+        if host_matches(inp.url, policy.block_sites):                # 黑名单优先：父域在白名单也不能抓
+            raise SkillFailed(f"域名在黑名单: {urlparse(inp.url).hostname}")
         if not host_matches(inp.url, fetch_allowlist(policy, params())):
-            raise SkillFailed(f"域名不在抓取白名单: {urlparse(inp.url).netloc}")
+            raise SkillFailed(f"域名不在抓取白名单: {urlparse(inp.url).hostname}")
         data = tools.fetch(inp.url)
         return FetchOut(url=inp.url, title=data.get("title") or "", content=data.get("content") or "")
 
