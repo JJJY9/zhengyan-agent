@@ -229,3 +229,38 @@ def test_retries_are_charged_per_attempt(policy, monkeypatch):
     with pytest.raises(BudgetExceeded):
         h.call("web.search", query="a")
     assert calls["n"] == 2 and budget.used["search_calls"] == 2
+
+
+def test_task_cache_single_flight(policy):
+    """并行专家用相同参数调用同一技能：只执行一次，其余等待并复用结果。"""
+    import threading
+    import time as clock
+
+    calls = {"n": 0}
+    gate = threading.Barrier(5)
+
+    def slow(i):
+        calls["n"] += 1
+        clock.sleep(0.2)
+        return Out(n=1)
+
+    cache, flight = {}, {}
+    results, errors = [], []
+
+    def worker():
+        b = Budget(limits={"search_calls": 5, "tokens": 10, "wall_clock_s": 60})
+        h = Harness(policy, SkillRegistry([skill("market.daily", run=slow)]), lambda r: None, b,
+                    RunContext("t", "standard", date(2026, 10, 18)), cache=cache, flight=flight)
+        try:
+            gate.wait(timeout=5)
+            results.append(h.call("market.daily").n)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+    assert not errors and results == [1] * 5
+    assert calls["n"] == 1

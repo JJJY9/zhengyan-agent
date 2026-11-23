@@ -27,6 +27,7 @@ class Deps:
     ledger: Ledger | None = None
     decision: Any = None          # 决策小模型（Kev/Jev）；None 时路由只用大模型
     _task_caches: OrderedDict = field(default_factory=OrderedDict, repr=False)
+    _task_flights: OrderedDict = field(default_factory=OrderedDict, repr=False)
     _cache_lock: Lock = field(default_factory=Lock, repr=False)
 
     MAX_CACHED_TASKS = 64
@@ -42,6 +43,17 @@ class Deps:
                 self._task_caches.popitem(last=False)
             return cache
 
+    def task_flight(self, task_id: str) -> dict:
+        """任务级在途占位：并行专家同参数调用同一技能时，只让一个真正执行，其余等待复用结果。"""
+        with self._cache_lock:
+            flight = self._task_flights.pop(task_id, None)
+            if flight is None:
+                flight = {}
+            self._task_flights[task_id] = flight
+            while len(self._task_flights) > self.MAX_CACHED_TASKS:
+                self._task_flights.popitem(last=False)
+            return flight
+
     def harness(self, task_id: str, route: str, as_of, budget: Budget, node: str = "", principal: str = "researcher",
                 task_scoped_cache: bool = False) -> Harness:
         return Harness(
@@ -50,6 +62,7 @@ class Deps:
                            is_cancelled=lambda: self.repo.is_cancel_requested(task_id)),
             llm=self.llm, decision=self.decision,
             cache=self.task_cache(task_id) if task_scoped_cache else None,
+            flight=self.task_flight(task_id) if task_scoped_cache else None,
         )
 
 
