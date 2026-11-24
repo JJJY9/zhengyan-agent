@@ -105,3 +105,22 @@ def test_year_must_match_metric_period():
 def test_unitless_decimal_is_recomputed():
     assert v("上半年营业收入907.03", ["a"]).status == "verified"       # 按亿刻度匹配 907.03 亿
     assert v("上半年营业收入950.00", ["a"]).status == "disputed"
+
+
+def test_cross_field_numbers_are_rejected():
+    """同一张卡里的营收数字不能被「扣非净利润」的主张拿去复算。"""
+    both = card("m", metrics=[
+        Metric(name="营业收入", field="OPERATE_INCOME", value=Decimal("90703260000"), unit="元",
+               period="2026-06-30", basis="cumulative"),
+        Metric(name="归母净利润", field="PARENT_NETPROFIT", value=Decimal("5000000000"), unit="元",
+               period="2026-06-30", basis="cumulative"),
+    ])
+    ev = {**EV, "m": both}
+
+    def claim(text):
+        return verify_claim(Claim(id="x", text=text, kind="fact", evidence_ids=["m"]), ev, AS_OF)
+
+    assert claim("营业收入907.03亿元").status == "verified"
+    assert claim("归母净利润50亿元").status == "verified"
+    assert claim("扣非净利润907.03亿元").status == "disputed"      # 907.03 是营收，不是利润
+    assert claim("归母净利润907.03亿元").status == "disputed"
