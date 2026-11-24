@@ -1,5 +1,7 @@
 """研究任务：提交、进度、人在环确认、取消、工作记忆、审计、系统元信息。"""
+import json
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from advisor.api.common import Svc
@@ -73,6 +75,18 @@ def workspace(task_id: str, svc: Svc):
 @router.get("/tasks/{task_id}/audit")
 def audit(task_id: str, svc: Svc):
     return svc.deps.repo.list_audit(task_id)
+
+
+@router.get("/tasks/{task_id}/export.json")
+def export_task(task_id: str, svc: Svc):
+    """任务明细打包（任务、工作记忆、审计记录），便于离线复现与排障。"""
+    t = svc.deps.repo.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "任务不存在")
+    body = json.dumps({"task": t, "working": svc.deps.repo.list_working(task_id),
+                       "audit": svc.deps.repo.list_audit(task_id)}, ensure_ascii=False, default=str)
+    return Response(body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="task_{task_id}.json"'})
 
 
 @router.get("/meta")

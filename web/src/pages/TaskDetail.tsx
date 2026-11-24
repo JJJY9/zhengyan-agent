@@ -158,6 +158,9 @@ export default function TaskDetail() {
       )}
 
       <h2>运行明细 <span className="muted small">每一步调用了哪些数据工具和模型、用了多久，用于事后追查</span></h2>
+      <div className="row-btns">
+        <a className="button ghost" href={`/api/tasks/${id}/export.json`} download>下载任务明细 (.json)</a>
+      </div>
       {audit === null ? (
         <button onClick={openAudit}>展开运行明细</button>
       ) : <TraceView audit={audit} />}

@@ -175,3 +175,12 @@ def test_export_all_dossiers_as_markdown_zip(client):
     names = z.namelist()
     assert names and any(CODE in n for n in names)
     assert "研究底稿" in z.read(names[0]).decode("utf-8")
+
+
+def test_export_task_bundle(client):
+    tid = client.get("/api/tasks").json()[0]["task_id"]
+    r = client.get(f"/api/tasks/{tid}/export.json")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    body = r.json()
+    assert body["task"]["task_id"] == tid and "audit" in body and "working" in body
+    assert client.get("/api/tasks/nope/export.json").status_code == 404
