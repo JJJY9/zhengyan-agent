@@ -92,6 +92,12 @@ export interface EvalRun {
   current?: { temperature: number; abstain_below: number };
 }
 
+export interface SkillInfo {
+  name: string; version: string; category: string; permission: string; description?: string;
+}
+
+export interface Health { mongo: boolean; skills: SkillInfo[] }
+
 export interface Meta {
   experts: { key: string; name: string; mandate: string; constraint: string; role: string }[];
   routes: Record<string, { llm_role: string; budget: Record<string, number> }>;

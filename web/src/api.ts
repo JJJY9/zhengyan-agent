@@ -1,4 +1,4 @@
-import type { Alert, PersonalFit, ProfileState, ProfileVersion, StrategyCard, StrategyEvent, StrategyOverview, StrategySpec, NavPoint, PaperTrade, Subscription, Holding, RiskProfile, AuditRecord, Dossier, DossierDiff, EvalRun, Evidence, Meta, RsiAsset, RsiEvent, RsiIssue, RsiJob, RsiOverview, RsiRun, Task, WatchRow, WorkingItem, ProfileImpact } from "./types";
+import type { Alert, Health, PersonalFit, ProfileState, ProfileVersion, StrategyCard, StrategyEvent, StrategyOverview, StrategySpec, NavPoint, PaperTrade, Subscription, Holding, RiskProfile, AuditRecord, Dossier, DossierDiff, EvalRun, Evidence, Meta, RsiAsset, RsiEvent, RsiIssue, RsiJob, RsiOverview, RsiRun, Task, WatchRow, WorkingItem, ProfileImpact } from "./types";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
@@ -31,6 +31,7 @@ export const api = {
   cancel: (id: string) => req<{ status: string }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
   workspace: (id: string) => req<WorkingItem[]>(`/api/tasks/${id}/workspace`),
   meta: () => req<Meta>("/api/meta"),
+  health: () => req<Health>("/api/health"),
   diff: (key: string, version: number) => req<DossierDiff>(`/api/dossiers/${key}/${version}/diff`),
   evals: () => req<EvalRun[]>("/api/evals"),
   evalRun: (id: string) => req<EvalRun>(`/api/evals/${id}`),
