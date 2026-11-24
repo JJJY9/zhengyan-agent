@@ -35,6 +35,8 @@ class Rule(BaseModel):
         v = facts.get(self.field)
         if v is None:
             return None
+        if self.field == "mdd_250d":
+            v = abs(float(v))          # 指标本身是负值（最大回撤 -60%），规则按回撤幅度理解
         if isinstance(self.value, str) or isinstance(v, str):
             a, b = str(v), str(self.value)
         else:

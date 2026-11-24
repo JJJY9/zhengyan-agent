@@ -27,10 +27,22 @@ def _arm(ev: dict, arm: str, slice_: str) -> dict:
 def protocol_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
     frozen = ledger.db.rsi_protocols.find_one({"scenario": run.scenario}) or {}
     p = ev.get("protocol", {})
-    ok = bool(frozen) and p.get("replay_hash") == frozen.get("hash") and "base" in ev["arms"] and "cand" in ev["arms"]
-    return GateResult(name="protocol", label="协议一致", passed=ok,
-                      detail=(f"回放集哈希 {str(p.get('replay_hash'))[:10]} 与冻结协议一致，评分器 {p.get('scorer')}，基线与候选同一次评测"
-                              if ok else "回放集或评分规则与冻结协议不一致：换了尺子，结论无效"))
+    frozen_ids = frozen.get("replay_ids") or []
+    want = int(p.get("replay_frozen", len(frozen_ids)))
+    loaded = int(p.get("replay_loaded", len(frozen_ids)))
+    missing = bool(frozen_ids) and loaded < want
+    ok = (bool(frozen) and bool(frozen_ids) and p.get("replay_hash") == frozen.get("hash")
+          and "base" in ev["arms"] and "cand" in ev["arms"] and not missing)
+    if ok:
+        detail = (f"回放集哈希 {str(p.get('replay_hash'))[:10]} 与冻结协议一致（{loaded}/{want} 项），"
+                  f"评分器 {p.get('scorer')}，基线与候选同一次评测")
+    elif missing:
+        detail = f"冻结回放集 {want} 项只加载到 {loaded} 项（缓存过期或被清理）：无法按同一套题评测"
+    elif bool(frozen) and not frozen_ids:
+        detail = "冻结回放集为空：无法按同一套题评测"
+    else:
+        detail = "回放集或评分规则与冻结协议不一致：换了尺子，结论无效"
+    return GateResult(name="protocol", label="协议一致", passed=ok, detail=detail)
 
 
 def leakage_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
@@ -106,7 +118,9 @@ def overfit_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
     released = ledger.released_count(run.kind)
     over = []
     for k, (old, new) in run.diff.get("params", {}).items():
-        if k in STEP and abs(float(new) - float(old)) > max_step(k, released) + 1e-9:
+        # 网格点四舍五入到 3 位小数，最多带来 0.0005 的偏差：留 1e-3 容差，
+        # 否则优化器自己产出的合法候选会被门控误拒
+        if k in STEP and abs(float(new) - float(old)) > max_step(k, released) + 1e-3:
             over.append(f"{k} 改动 {old}→{new} 超过本轮步长上限 {max_step(k, released):.3f}")
     return GateResult(name="overfit", label="防过拟合", passed=not over,
                       detail="；".join(over) if over else f"改动幅度在第 {released + 1} 轮步长上限内（越改越小）")
@@ -115,9 +129,10 @@ def overfit_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
 def noise_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
     prim = ev["primary"]
     b, c = _arm(ev, "base", prim), _arm(ev, "cand", prim)
-    if ev.get("repeats", 0) < 3 or not b or not c:
+    n = min(len(b.get("runs") or []), len(c.get("runs") or []))
+    if ev.get("repeats", 0) < 3 or not b or not c or n < 3:
         return GateResult(name="noise", label="噪声门控", passed=False,
-                          detail=f"只有 {ev.get('repeats', 0)} 次重复，至少需要 3 次才能区分进步与波动")
+                          detail=f"{prim} 片实际重复 {n} 次（总运行 {ev.get('repeats', 0)} 次），至少需要 3 次才能区分进步与波动")
     delta = c["mean"] - b["mean"]
     band = max(b["spread"], c["spread"])
     ok = delta > band
@@ -130,11 +145,18 @@ def cost_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
     bt, ct = ev["arms"]["base"].get("tokens", 0), ev["arms"]["cand"].get("tokens", 0)
     prim = ev["primary"]
     b, c = _arm(ev, "base", prim), _arm(ev, "cand", prim)
-    gain = (c.get("mean", 0) - b.get("mean", 0)) / max(b.get("mean") or 1e-9, 1e-9)
+    base_mean, cand_mean = b.get("mean") or 0.0, c.get("mean") or 0.0
     inc = (ct - bt) / bt if bt else 0.0
-    ok = inc <= COST_FREE_RATIO or gain >= inc
+    if base_mean <= 0:
+        # 基线质量为 0 时相对提升没有定义：不能拿 1e-9 当分母把任何微小提升放大成天文数字
+        ok = inc <= COST_FREE_RATIO and cand_mean > base_mean
+        quality = f"基线质量为 {base_mean:.3f}，相对提升无意义（候选 {cand_mean:.3f}），只有成本不增才放行"
+    else:
+        gain = (cand_mean - base_mean) / base_mean
+        ok = inc <= COST_FREE_RATIO or gain >= inc
+        quality = f"质量相对提升 {gain:+.0%}"
     return GateResult(name="cost", label="成本门控", passed=ok,
-                      detail=f"token {bt}→{ct}（{inc:+.0%}），质量相对提升 {gain:+.0%}" + ("" if ok else "：花费涨幅超过质量收益"))
+                      detail=f"token {bt}→{ct}（{inc:+.0%}），{quality}" + ("" if ok else "：花费涨幅超过质量收益"))
 
 
 def regression_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
