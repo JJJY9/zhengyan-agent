@@ -23,7 +23,7 @@ export default function Evals() {
   const [run, setRun] = useState<EvalRun | null>(null);
   const [msg, setMsg] = useState("");
 
-  useEffect(() => { api.evals().then(setRuns); }, [msg]);
+  useEffect(() => { api.evals().then(setRuns).catch(() => undefined); }, [msg]);
   useEffect(() => {
     if (!id) { setRun(null); return; }
     let alive = true;
@@ -42,6 +42,13 @@ export default function Evals() {
     load();
     return () => { alive = false; window.clearTimeout(timer); };
   }, [id]);
+
+  // 列表里有运行中的评测时自动刷新（路由校准/对照评测完成后无需手动刷新）
+  useEffect(() => {
+    if (!(runs ?? []).some((r) => r.status === "running")) return;
+    const timer = window.setTimeout(() => api.evals().then(setRuns).catch(() => undefined), 6000);
+    return () => window.clearTimeout(timer);
+  }, [runs]);
 
   const startCompare = async () => {
     if (!confirm("对照评测会对每个用例分别跑标准研究与争议深研（约 10-20 分钟，消耗 DeepSeek 额度）。继续？")) return;
@@ -63,9 +70,9 @@ export default function Evals() {
   };
   const startRouting = async () => {
     try {
-      await api.startRoutingEval();
-      setMsg("路由校准已提交，约 1 分钟后刷新列表。");
-      setTimeout(() => setMsg(""), 60000);
+      const { run_id } = await api.startRoutingEval();
+      api.evals().then(setRuns).catch(() => undefined);
+      nav(`/evals/${run_id}`);          // 评测文档已登记：直接进详情，轮询跟进到完成
     } catch (e) {
       setMsg((e as Error).message);
     }
@@ -217,6 +224,7 @@ function RoutingView({ run }: { run: EvalRun }) {
   const cal = run.calibration;
   return (
     <div>
+      {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
       <div className="stat-row">
         <div className="card stat"><div className="muted small">准确率</div><b>{((run.accuracy ?? 0) * 100).toFixed(0)}%</b></div>
         <div className="card stat"><div className="muted small">深研召回</div><b>{((run.deep_recall ?? 0) * 100).toFixed(0)}%</b></div>

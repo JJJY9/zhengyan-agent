@@ -42,31 +42,40 @@ def fit(rows: list[dict], abstain_below: float) -> dict:
     return {"by_temperature": {str(k): v for k, v in out.items()}, "best_temperature": best}
 
 
-def run_routing_eval(deps, path=CASES) -> str:
+def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
     cases = json.loads(path.read_text(encoding="utf-8"))["cases"]
-    run_id = "rt_" + uuid.uuid4().hex[:8]
-    # 评测线上实际在用的参数：policies.yaml 叠加 RSI 账本里已发布的路由参数（S2）
-    cfg = deps.rsi.routing(deps.policy.routing) if deps.rsi else dict(deps.policy.routing)
-    rows = []
-    for i, case in enumerate(cases):
-        h = deps.harness(f"eval-{run_id}", "quick", date.today(), Budget(limits={"tokens": 20000, "wall_clock_s": 120}),
-                         node="route_eval", principal="evaluator")
-        d = decide_route(h, case["question"], case.get("intent", "research"), "auto", cfg)
-        rows.append({"id": i, "question": case["question"], "label": case["label"], "route": d.route,
-                     "source": d.source, "classifier": d.classifier, "probs": d.probs or {k: (1.0 if k == d.route else 0.0) for k in ORDER},
-                     "stakes": d.stakes, "uncertainty": d.uncertainty, "intent": case.get("intent", "research"),
-                     "abstain": d.abstain, "correct": d.route == case["label"]})
-    model_rows = [r for r in rows if r["source"] in ("model", "abstain")]
-    confusion = {a: {b: sum(1 for r in rows if r["label"] == a and r["route"] == b) for b in ORDER} for a in ORDER}
-    deep_recall = (confusion["deep"]["deep"] / max(sum(confusion["deep"].values()), 1))
-    run = {
-        "run_id": run_id, "type": "routing", "status": "done", "created_at": datetime.now(timezone.utc),
-        "rows": rows, "confusion": confusion,
-        "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3),
-        "deep_recall": round(deep_recall, 3),
-        "abstain_rate": round(sum(r["abstain"] for r in rows) / len(rows), 3),
-        "calibration": fit(model_rows, float(cfg.get("abstain_below", 0.55))) if model_rows else {},
-        "current": {"temperature": cfg.get("temperature", 1.0), "abstain_below": cfg.get("abstain_below", 0.55)},
-    }
-    deps.repo.save_eval(run)
+    run_id = run_id or "rt_" + uuid.uuid4().hex[:8]
+    repo = deps.repo
+    # 先登记 running：评测期间列表可见、前端能接上进度；任何异常落成 failed，不会静默消失
+    repo.save_eval({"run_id": run_id, "type": "routing", "status": "running",
+                    "created_at": datetime.now(timezone.utc)})
+    try:
+        # 评测线上实际在用的参数：policies.yaml 叠加 RSI 账本里已发布的路由参数（S2）
+        cfg = deps.rsi.routing(deps.policy.routing) if deps.rsi else dict(deps.policy.routing)
+        rows = []
+        for i, case in enumerate(cases):
+            h = deps.harness(f"eval-{run_id}", "quick", date.today(), Budget(limits={"tokens": 20000, "wall_clock_s": 120}),
+                             node="route_eval", principal="evaluator")
+            d = decide_route(h, case["question"], case.get("intent", "research"), "auto", cfg)
+            rows.append({"id": i, "question": case["question"], "label": case["label"], "route": d.route,
+                         "source": d.source, "classifier": d.classifier, "probs": d.probs or {k: (1.0 if k == d.route else 0.0) for k in ORDER},
+                         "stakes": d.stakes, "uncertainty": d.uncertainty, "intent": case.get("intent", "research"),
+                         "abstain": d.abstain, "correct": d.route == case["label"]})
+        model_rows = [r for r in rows if r["source"] in ("model", "abstain")]
+        confusion = {a: {b: sum(1 for r in rows if r["label"] == a and r["route"] == b) for b in ORDER} for a in ORDER}
+        deep_recall = (confusion["deep"]["deep"] / max(sum(confusion["deep"].values()), 1))
+        run = {
+            "run_id": run_id, "type": "routing", "status": "done", "created_at": datetime.now(timezone.utc),
+            "rows": rows, "confusion": confusion,
+            "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 3),
+            "deep_recall": round(deep_recall, 3),
+            "abstain_rate": round(sum(r["abstain"] for r in rows) / len(rows), 3),
+            "calibration": fit(model_rows, float(cfg.get("abstain_below", 0.55))) if model_rows else {},
+            "current": {"temperature": cfg.get("temperature", 1.0), "abstain_below": cfg.get("abstain_below", 0.55)},
+        }
+        repo.save_eval(run)
+    except Exception as e:  # noqa: BLE001  失败也要在列表里可见
+        repo.save_eval({"run_id": run_id, "type": "routing", "status": "failed",
+                        "error": f"{type(e).__name__}: {e}", "created_at": datetime.now(timezone.utc)})
+        raise
     return run_id

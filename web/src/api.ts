@@ -35,7 +35,7 @@ export const api = {
   evals: () => req<EvalRun[]>("/api/evals"),
   evalRun: (id: string) => req<EvalRun>(`/api/evals/${id}`),
   startUpdateEval: () => req<{ run_id: string }>("/api/evals/update", { method: "POST" }),
-  startRoutingEval: () => req<{ submitted: boolean }>("/api/evals/routing", { method: "POST" }),
+  startRoutingEval: () => req<{ run_id: string }>("/api/evals/routing", { method: "POST" }),
   startCompare: (body: { case_ids?: string[]; routes: string[] }) =>
     req<{ run_id: string }>("/api/evals/compare", { method: "POST", body: JSON.stringify(body) }),
   dossiers: () => req<(Pick<Dossier, "key" | "ticker" | "name" | "version" | "status" | "as_of" | "summary" | "created_at">)[]>("/api/dossiers"),
