@@ -1,6 +1,9 @@
 """决策档案：列表、版本、证据、版本差异、底稿、证据快照，以及研究台的行情快照。"""
+import io
+import zipfile
+
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
 from advisor.api.common import Svc
 from advisor.contracts import Dossier
@@ -29,6 +32,20 @@ def _dossier(svc: Svc, key: str, version: int | None = None) -> Dossier:
 @router.get("/dossiers")
 def dossiers(svc: Svc):
     return svc.deps.repo.list_dossiers()
+
+
+@router.get("/dossiers/export.zip")
+def export_markdown(svc: Svc):
+    """全部标的最新一版底稿打包下载（Markdown zip），用于归档与离线阅读。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for row in svc.deps.repo.list_dossiers():
+            d = svc.deps.repo.get_dossier(row["key"])
+            if d is None or not d.report_md:
+                continue
+            z.writestr(f"{d.ticker}_v{d.version}_{d.as_of}.md", d.report_md)
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="dossiers_markdown.zip"'})
 
 
 @router.get("/watchlist")

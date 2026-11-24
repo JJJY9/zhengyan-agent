@@ -163,3 +163,15 @@ def test_rsi_api_state_machine(client, service):
     rb = client.post("/api/rsi/rollback", json={"kind": "lessons", "reason": "API 冒烟测试回滚：理由够十个字"}).json()
     assert rb == {"kind": "lessons", "from": 2, "to": 1}
     assert client.post("/api/rsi/runs/rsi_api_1/release").status_code == 409    # 已回滚的候选不能再次发布
+
+
+def test_export_all_dossiers_as_markdown_zip(client):
+    import io
+    import zipfile
+
+    r = client.get("/api/dossiers/export.zip")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/zip")
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    names = z.namelist()
+    assert names and any(CODE in n for n in names)
+    assert "研究底稿" in z.read(names[0]).decode("utf-8")

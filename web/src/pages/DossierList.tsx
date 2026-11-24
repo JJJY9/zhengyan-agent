@@ -13,6 +13,9 @@ export default function DossierList() {
     <div className="page">
       <h1>决策档案</h1>
       <p className="muted">每个标的一份档案，每次研究生成新版本，旧版本保留。</p>
+      <div className="row-btns">
+        <a className="button ghost" href="/api/dossiers/export.zip" download>导出全部底稿 (.zip)</a>
+      </div>
       {rows === null ? <p className="muted">加载中…</p> : rows.length === 0 ? (
         <p className="muted">还没有档案。<Link to="/new">新建研究</Link></p>
       ) : (
