@@ -10,6 +10,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from advisor.contracts import Claim, EvidenceCard
+from advisor.evidence.grading import cst_date
 
 _NUM = re.compile(r"(-?\d+(?:,\d{3})*(?:\.\d+)?)\s*(亿元|万元|亿|万|元|%|个百分点|倍)")
 _BARE = re.compile(r"(?<![\d.])(\d+\.\d+)(?![\d.%])")
@@ -168,7 +169,7 @@ def verify_claim(claim: Claim, evidence: dict[str, EvidenceCard], as_of: date) -
     if not known:
         notes.append("没有可用证据")
         return done("rejected")
-    future = [c.id for c in known if c.published_at and c.published_at.date() > as_of]
+    future = [c.id for c in known if c.published_at and cst_date(c.published_at) > as_of]
     if future:
         notes.append(f"证据晚于研究时点: {future}")
         return done("rejected")
