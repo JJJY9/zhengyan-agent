@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     reports_dir: Path = ROOT / "reports"
     auth_user: str = ""          # 访问账号密码：设置了密码才启用（对外分享链接时用）
     auth_password: str = ""
+    auth_cookie_secure: bool = False   # HTTPS 部署时置 true（或由反向代理设置 X-Forwarded-Proto: https）
 
 
 @lru_cache

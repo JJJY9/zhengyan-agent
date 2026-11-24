@@ -41,6 +41,13 @@ docker compose --profile test run --rm test
 
 本地决策小模型 Kev 依赖 Apple Silicon + MLX，Docker 里不包含；不配置时意图识别和路由判别自动退回大模型，功能不受影响。
 
+> **对外分享先设口令**：默认只绑 `127.0.0.1:8000`，仅本机可访问。需要让局域网/公网访问时：
+> ① 在 `.env` 设置 `AUTH_PASSWORD`（用户名默认 `admin`，可用 `AUTH_USER` 修改）；
+> ② 把 `docker-compose.yml` 的端口映射改为 `"8000:8000"`（或只绑内网地址）；
+> ③ 经 HTTPS 反向代理（Nginx/Caddy 等）暴露，并设 `AUTH_COOKIE_SECURE=true`；反向代理应设置
+> `X-Forwarded-Proto` 并剥离客户端自带的同名头。未设口令就对外发布，任何人都能读取全部档案、
+> 修改个人约束并消耗你的 DeepSeek 额度。
+
 ### 方式二：宿主机直接运行（开发用）
 
 前置：Python 3.12+；Node 18+；`uv`（`python3 -m pip install --user uv`）。没有 uv 时可用 `pip install -r requirements.txt -r requirements-dev.txt && pip install -e .` 代替 `uv sync`。

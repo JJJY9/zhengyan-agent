@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from advisor.api.common import Svc
 from advisor.contracts import ResearchRequest
+from advisor.graph.runner import PoolSaturated
 
 router = APIRouter(prefix="/api")
 
@@ -31,6 +32,8 @@ def research(req: ResearchRequest, svc: Svc):
         return {"task_id": svc.research.start(req)}
     except LLMNotConfigured as e:
         raise HTTPException(400, str(e)) from e
+    except PoolSaturated as e:
+        raise HTTPException(429, str(e)) from e
 
 
 @router.get("/tasks")
@@ -54,6 +57,8 @@ def resume(task_id: str, body: ResumeIn, svc: Svc):
         svc.research.resume(task_id, body.approve)
     except ValueError as e:
         raise HTTPException(409, str(e)) from e
+    except PoolSaturated as e:
+        raise HTTPException(429, str(e)) from e
     return {"ok": True}
 
 
