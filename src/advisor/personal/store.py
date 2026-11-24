@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from pymongo import DESCENDING
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 from advisor.personal.models import ProfileInput, ProfileVersion
 
@@ -31,12 +32,17 @@ class ProfileStore:
         tickers = [h.ticker for h in data.holdings]
         if len(tickers) != len(set(tickers)):
             raise ProfileError("同一只股票只能有一条记录")
-        prev = self.current()
-        v = ProfileVersion(**data.model_dump(), version=(prev.version if prev else 0) + 1,
-                           parent_version=prev.version if prev else None,
-                           confirmed_by=actor, confirmed_at=datetime.now(timezone.utc))
-        self.col.insert_one(v.model_dump(mode="json"))
-        return v
+        for _ in range(3):
+            prev = self.current()
+            v = ProfileVersion(**data.model_dump(), version=(prev.version if prev else 0) + 1,
+                               parent_version=prev.version if prev else None,
+                               confirmed_by=actor, confirmed_at=datetime.now(timezone.utc))
+            try:
+                self.col.insert_one(v.model_dump(mode="json"))
+                return v
+            except DuplicateKeyError:      # 并发确认：重读最新版本号后重试（版本只追加、不覆盖）
+                continue
+        raise ProfileError("个人约束版本分配连续冲突，请重试")
 
     def set_impact(self, version: int, impact: list[dict]) -> None:
         """只写系统算出的影响记录，不碰你确认过的约束字段。"""

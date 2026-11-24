@@ -161,3 +161,21 @@ def test_watch_review_single_flight(repo):
     finally:
         store.get_alert = real_get
     assert len(calls) == 1
+
+
+def test_profile_confirm_retries_on_version_race(services, monkeypatch):
+    """并发确认（双击/多标签页）撞版本号时自动重读并重试，不丢用户确认。"""
+    store = services.profiles
+    data = ProfileInput(risk=RiskProfile(max_drawdown_pct=20, horizon_months=36),
+                        holdings=[Holding(ticker=CODE, thesis="高端白酒提价能力强，现金流稳定")])
+    assert store.confirm(data, "owner", confirmed=True).version == 1
+    real = store.current
+    calls = {"n": 0}
+
+    def stale():
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real()      # 第一次读到空快照（并发窗口）
+
+    monkeypatch.setattr(store, "current", stale)
+    v2 = store.confirm(data.model_copy(update={"change_note": "并发确认重试"}), "owner", confirmed=True)
+    assert v2.version == 2 and v2.parent_version == 1
