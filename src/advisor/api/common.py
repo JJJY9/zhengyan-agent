@@ -7,6 +7,7 @@ from typing import Annotated, Callable
 
 from fastapi import Depends, HTTPException, Request
 
+from advisor.graph.runner import PoolSaturated
 from advisor.services import Services
 
 OWNER = "owner"            # 单人阶段的操作人；审计里如实标出「自批」
@@ -60,7 +61,12 @@ class JobBoard:
                 job.update(status="done", result=getattr(out, "run_id", None) or out)
             except Exception as e:      # 失败可见
                 job.update(status="failed", error=f"{type(e).__name__}: {e}")
-        svc.submit(run)
+        try:
+            svc.submit(run)
+        except PoolSaturated as e:      # 队列满：不登记作业，直接 429
+            with self._lock:
+                self.jobs.pop(jid, None)
+            raise HTTPException(429, str(e)) from e
         return {"job_id": jid}
 
     def running(self, key: str) -> dict | None:

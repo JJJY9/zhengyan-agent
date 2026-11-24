@@ -3,10 +3,17 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Sparkle } from "../components/Icons";
 
-/** 登录后回到原来要去的页面；只接受站内路径。 */
+/** 登录后回到原来要去的页面；只接受解析后仍是同源的站内路径。 */
 function nextPath() {
   const n = new URLSearchParams(location.search).get("next") ?? "";
-  return n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/login") ? n : "/workspace";
+  if (!n.startsWith("/") || n.startsWith("//") || n.includes("\\")) return "/workspace";
+  try {
+    const url = new URL(n, location.origin);
+    if (url.origin !== location.origin || url.pathname === "/login") return "/workspace";
+    return url.pathname + url.search + url.hash;
+  } catch {
+    return "/workspace";
+  }
 }
 
 export default function Login() {

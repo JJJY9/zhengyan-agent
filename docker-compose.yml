@@ -41,7 +41,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"     # Linux 下也能访问宿主机
     ports:
-      - "8000:8000"
+      # 默认只绑本机，避免无意暴露。对外分享时改为 "8000:8000" 并务必设置 AUTH_PASSWORD（建议加 HTTPS 反向代理）
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./reports:/app/reports                  # 研究底稿落到宿主机
     depends_on:
