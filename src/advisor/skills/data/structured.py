@@ -1,7 +1,8 @@
 """结构化数据 Skill：财报、行情、公告。只返回研究时点（as_of）可得的信息，产出 A 级证据卡。"""
 import json
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,16 @@ def _d(s: str | None) -> date | None:
     try:
         return date.fromisoformat(s[:10]) if s else None
     except ValueError:          # 数据源偶发 "NaT" 等脏值：当作缺失，不让整个技能失败
+        return None
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    """数据源码 → Decimal；None/NaN/空串/非数字一律返回 None。"""
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
         return None
 
 
@@ -118,14 +129,17 @@ def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> l
         return StatementsOut(name=name, cards=cards)
 
     def daily(inp: DailyIn) -> CardsOut:
-        rows = source.daily(inp.code, inp.as_of - timedelta(days=inp.lookback_days), inp.as_of)
-        rows = [r for r in rows if r.get("close") is not None
-                and (day := _d(r.get("date"))) is not None and day <= inp.as_of]
-        rows.sort(key=lambda r: r["date"])      # 数据源顺序不作假设，区间统计按日期升序
+        rows = []
+        for r in source.daily(inp.code, inp.as_of - timedelta(days=inp.lookback_days), inp.as_of):
+            day, price = _d(r.get("date")), to_decimal(r.get("close"))
+            if day is None or day > inp.as_of or price is None or price <= 0:   # 停牌/脏行：价格须为正
+                continue
+            rows.append((day, price, r))
+        rows.sort(key=lambda x: x[0])           # 数据源顺序不作假设，区间统计按日期升序
         if len(rows) < 21:
             raise SkillFailed(f"{inp.code} 行情数据不足")
-        closes = [Decimal(str(r["close"])) for r in rows]
-        last = rows[-1]["date"][:10]
+        closes = [price for _, price, _ in rows]
+        last = rows[-1][0].isoformat()
         metrics = [Metric(name="收盘价(前复权)", field="close", value=closes[-1], unit="元", period=last, basis="point")]
         for w in (20, 60, 250):
             if (chg := price_change(closes, w)) is not None:
@@ -136,21 +150,21 @@ def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> l
             if (ma := moving_average(closes, w)) is not None and ma != 0:
                 metrics.append(Metric(name=f"收盘价相对MA{w}", field=f"ma{w}_gap", value=q((closes[-1] / ma - 1) * 100),
                                       unit="%", period=last, basis="ratio", note=f"MA{w}={q(ma)}"))
-        if (dd := max_drawdown(closes[-250:])) is not None:
+        if len(closes) >= 250 and (dd := max_drawdown(closes[-250:])) is not None:   # 不足 250 日不冒充 250 日口径
             metrics.append(Metric(name="近250日最大回撤", field="mdd_250d", value=dd, unit="%", period=last, basis="change"))
-        vols = [Decimal(str(r["volume"])) for r in rows if r.get("volume") is not None]
+        vols = [v for _, _, r in rows if (v := to_decimal(r.get("volume"))) is not None]
         if len(vols) >= 60 and sum(vols[-60:]) > 0:
             ratio_v = (sum(vols[-20:]) / 20) / (sum(vols[-60:]) / 60)
             metrics.append(Metric(name="近20日/近60日均量比", field="vol_ratio_20_60", value=q(ratio_v * 100), unit="%",
                                   period=last, basis="ratio"))
-        turnovers = [Decimal(str(r["turnover"])) for r in rows[-20:] if r.get("turnover") is not None]
+        turnovers = [v for _, _, r in rows[-20:] if (v := to_decimal(r.get("turnover"))) is not None]
         if turnovers:
             metrics.append(Metric(name="近20日平均换手率", field="turnover_20d", value=q(sum(turnovers) / len(turnovers)),
                                   unit="%", period=last, basis="ratio"))
         card = factory.make(
-            content=json.dumps(rows[-260:], ensure_ascii=False), level="A", source_type="market",
+            content=json.dumps([r for _, _, r in rows[-260:]], ensure_ascii=False), level="A", source_type="market",
             title=f"{inp.code} 日线行情（截至 {last}）", site_name="AKShare/东方财富行情",
-            origin_id=f"market:{inp.code}:{last}", published_at=_dt(_d(last)), as_of=inp.as_of,
+            origin_id=f"market:{inp.code}:{last}", published_at=_dt(rows[-1][0]), as_of=inp.as_of,
             excerpt="；".join(f"{m.name} {m.value}{m.unit}" for m in metrics), metrics=metrics,
             caveats=["前复权价格；行情只描述状态，不单独推出买卖结论"],
             skill="market.daily", skill_version="1.1.0",

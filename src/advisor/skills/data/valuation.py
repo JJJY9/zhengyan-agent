@@ -12,7 +12,7 @@ from advisor.evidence import EvidenceFactory
 from advisor.harness.errors import SkillFailed
 from advisor.skills.compute.finance import percentile_rank, q, ttm
 from advisor.skills.data.ashare import AShareSource
-from advisor.skills.data.structured import CardsOut
+from advisor.skills.data.structured import CardsOut, to_decimal
 
 
 class ValuationIn(BaseModel):
@@ -29,7 +29,7 @@ def _d(s: str | None) -> date | None:
 
 
 def _latest(points: list[tuple[date, Decimal]], day: date) -> Decimal | None:
-    """points 按披露日升序；返回 day 当天已披露的最新值。"""
+    """points 按生效日升序；返回 day 当天已生效的最新值。"""
     value = None
     for notice, v in points:
         if notice > day:
@@ -38,45 +38,82 @@ def _latest(points: list[tuple[date, Decimal]], day: date) -> Decimal | None:
     return value
 
 
+def _latest_balance(points: list[tuple[date, date, Decimal]], day: date) -> Decimal | None:
+    """资产负债表时点取值：取 day 当天可见的各期里报告期最新的一期；同一报告期多次披露取晚披露的修订值。"""
+    best: tuple[date, date] | None = None
+    value = None
+    for notice, period, v in points:
+        if notice > day or period > day:
+            continue
+        key = (period, notice)
+        if best is None or key > best:
+            best, value = key, v
+    return value
+
+
 def build_valuation_skill(source: AShareSource, factory: EvidenceFactory) -> Skill:
     def run(inp: ValuationIn) -> CardsOut:
-        income = [r for r in source.income_rows(inp.code)
-                  if _d(r.get("REPORT_DATE")) and _d(r.get("NOTICE_DATE")) and _d(r["NOTICE_DATE"]) <= inp.as_of
-                  and r.get("PARENT_NETPROFIT") is not None]
+        income = []
+        for r in source.income_rows(inp.code):
+            notice, period = _d(r.get("NOTICE_DATE")), _d(r.get("REPORT_DATE"))
+            np_ = to_decimal(r.get("PARENT_NETPROFIT"))
+            if notice is None or period is None or notice > inp.as_of or np_ is None:
+                continue
+            income.append((notice, period.isoformat(), np_, r))
         if not income:
             raise SkillFailed("没有可用利润表，无法估值")
-        name = income[0].get("SECURITY_NAME_ABBR") or inp.code
-        cum = {r["REPORT_DATE"][:10]: Decimal(str(r["PARENT_NETPROFIT"])) for r in income}
-        notice = {r["REPORT_DATE"][:10]: _d(r["NOTICE_DATE"]) for r in income}
-        ttm_points = sorted(((notice[p], p, v) for p in cum if (v := ttm(cum, p)) is not None), key=lambda x: (x[0], x[1]))
+        name = income[0][3].get("SECURITY_NAME_ABBR") or inp.code
+        cum = {p: v for _, p, v, _ in income}
+        notice = {p: n for n, p, _, _ in income}
+
+        def effective(period: str, value: Decimal) -> date | None:
+            """TTM 依赖的报表全部披露后才生效：生效日取依赖报表披露日的最大值。"""
+            y, md = period[:4], period[4:]
+            deps = [period] if md == "-12-31" else [period, f"{int(y) - 1}-12-31", f"{int(y) - 1}{md}"]
+            days = [notice.get(dep) for dep in deps]
+            return None if any(x is None for x in days) else max(days)
+
+        ttm_points = []
+        for p in cum:
+            v = ttm(cum, p)
+            eff = effective(p, v) if v is not None else None
+            if v is not None and eff is not None:
+                ttm_points.append((eff, p, v))
+        ttm_points.sort(key=lambda x: (x[0], x[1]))
         ttm_points = [(d, v) for d, _, v in ttm_points]
-        # 资产负债表行只要披露日可解析：报告期仅作「同日披露多期」的排序键，
-        # REPORT_DATE 缺失/NaT 不应丢掉仍可用的股本与净资产点。
-        balance = sorted(
-            ((_d(r["NOTICE_DATE"]), r) for r in source.balance_rows(inp.code)
-             if _d(r.get("NOTICE_DATE")) and _d(r["NOTICE_DATE"]) <= inp.as_of and r.get("SHARE_CAPITAL")),
-            key=lambda x: (x[0], x[1].get("REPORT_DATE") or ""),
-        )
-        shares = [(d, Decimal(str(r["SHARE_CAPITAL"]))) for d, r in balance]
-        equity = [(d, Decimal(str(r["TOTAL_PARENT_EQUITY"]))) for d, r in balance if r.get("TOTAL_PARENT_EQUITY")]
+
+        # 资产负债表按报告期取最新一期（MRQ）：披露日决定「何时可见」，报告期决定「哪期更新」。
+        # REPORT_DATE 不可解析的行只能作兜底候选（排在所有可解析报告期之后）。
+        shares: list[tuple[date, date, Decimal]] = []
+        equity: list[tuple[date, date, Decimal]] = []
+        for r in source.balance_rows(inp.code):
+            notice_d = _d(r.get("NOTICE_DATE"))
+            sh = to_decimal(r.get("SHARE_CAPITAL"))
+            if notice_d is None or notice_d > inp.as_of or sh is None or sh <= 0:
+                continue
+            period_d = _d(r.get("REPORT_DATE")) or date.min
+            shares.append((notice_d, period_d, sh))
+            eq = to_decimal(r.get("TOTAL_PARENT_EQUITY"))
+            if eq is not None and eq > 0:
+                equity.append((notice_d, period_d, eq))
         if not ttm_points or not shares:
             raise SkillFailed("TTM 净利润或股本不足，无法估值")
 
         rows = source.daily(inp.code, inp.as_of - timedelta(days=inp.window_days), inp.as_of)
         valid: list[tuple[date, Decimal]] = []
         for r in rows:
-            day = _d(r.get("date"))
-            if day is None or day > inp.as_of or r.get("close") is None:
+            day, price = _d(r.get("date")), to_decimal(r.get("close"))
+            if day is None or day > inp.as_of or price is None or price <= 0:
                 continue
-            valid.append((day, Decimal(str(r["close"]))))
+            valid.append((day, price))
         valid.sort(key=lambda x: x[0])          # 数据源顺序不作假设；脏尾行不能当最新价
         series = []
         for day, price in valid:
-            np_ttm, sh = _latest(ttm_points, day), _latest(shares, day)
+            np_ttm, sh = _latest(ttm_points, day), _latest_balance(shares, day)
             if np_ttm is None or sh is None or np_ttm <= 0:
                 continue
             series.append((day, price * sh / np_ttm))
-        np_now, sh_now, eq_now = _latest(ttm_points, inp.as_of), _latest(shares, inp.as_of), _latest(equity, inp.as_of)
+        np_now, sh_now, eq_now = _latest(ttm_points, inp.as_of), _latest_balance(shares, inp.as_of), _latest_balance(equity, inp.as_of)
         if not valid or np_now is None or sh_now is None:
             raise SkillFailed("行情或 TTM 缺失，无法估值")
         last_day, close = valid[-1]
@@ -121,6 +158,7 @@ def build_valuation_skill(source: AShareSource, factory: EvidenceFactory) -> Ski
             published_at=datetime(last_day.year, last_day.month, last_day.day, tzinfo=timezone.utc),
             excerpt="；".join(f"{m.name} {m.value}{m.unit}" for m in metrics[:6]), metrics=metrics,
             caveats=["股数按股本/面值 1 元折算", "历史市值用前复权价格，仅作相对比较",
+                     "资产负债表按报告期取最新一期（MRQ），TTM 在依赖报表都披露后才生效",
                      "PE 区间只覆盖窗口期，不代表合理估值", "情景只改变估值倍数，盈利假设不变，不是预测"] + pe_caveats,
             skill="valuation.snapshot", skill_version="1.0.0",
         )
