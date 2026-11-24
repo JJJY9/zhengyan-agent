@@ -38,9 +38,14 @@ def eval_run(run_id: str, svc: Svc):
 @router.post("/routing")
 def eval_routing(svc: Svc):
     _require_llm(svc)
+    from functools import partial
+
     from advisor.evals.routing import run_routing_eval
-    svc.submit(run_routing_eval, svc.deps)
-    return {"submitted": True}
+    run_id = "rt_" + uuid.uuid4().hex[:8]
+    svc.deps.repo.save_eval({"run_id": run_id, "type": "routing", "status": "running",
+                             "created_at": datetime.now(timezone.utc)})
+    svc.submit(partial(run_routing_eval, svc.deps, run_id=run_id))
+    return {"run_id": run_id}
 
 
 @router.post("/update")

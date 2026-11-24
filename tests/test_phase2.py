@@ -196,6 +196,22 @@ def test_checkpoint_escalation_to_deep(repo, policy):
     assert d.route == "deep" and d.routing["escalated_from"] == "standard" and d.deliberation
 
 
+def test_routing_eval_persists_progress_and_failure(service, monkeypatch):
+    from advisor.evals import routing as routing_mod
+
+    rid = routing_mod.run_routing_eval(service.deps, run_id="rt_progress")
+    assert service.deps.repo.get_eval(rid)["status"] == "done"
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(routing_mod, "decide_route", boom)
+    with pytest.raises(RuntimeError):
+        routing_mod.run_routing_eval(service.deps, run_id="rt_fail")
+    doc = service.deps.repo.get_eval("rt_fail")
+    assert doc["status"] == "failed" and "boom" in doc["error"]
+
+
 # ---------- 工作记忆与版本差异 ----------
 def test_prior_memory_and_diff(repo, policy):
     llm = FakeLLM(wrong_number=False)

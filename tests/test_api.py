@@ -196,6 +196,14 @@ def test_evals_require_llm_key(client, service):
         del service.deps.llm.configured
 
 
+def test_routing_eval_api_returns_run_id(client):
+    r = client.post("/api/evals/routing")
+    assert r.status_code == 200
+    rid = r.json()["run_id"]
+    assert rid.startswith("rt_")
+    assert client.get(f"/api/evals/{rid}").status_code == 200   # 文档先登记，不再 404/静默
+
+
 def test_export_rsi_ledger(client, service):
     from advisor.services import Services
 
