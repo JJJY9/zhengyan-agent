@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { ROUTE_LABEL } from "../format";
-import type { Meta } from "../types";
+import type { Health, Meta } from "../types";
 
 const STEPS = [
   { t: "你提一个问题", d: "例如「宁德时代最新一季业绩怎么样？」，可以带股票代码，也可以不带。" },
@@ -19,13 +19,38 @@ const ROUTE_DESC: Record<string, { when: string; how: string }> = {
 
 export default function System() {
   const [meta, setMeta] = useState<Meta | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [healthErr, setHealthErr] = useState("");
   useEffect(() => { api.meta().then(setMeta); }, []);
+  const loadHealth = () => {
+    api.health().then((h) => { setHealth(h); setHealthErr(""); })
+      .catch((e) => setHealthErr((e as Error).message));
+  };
+  useEffect(loadHealth, []);
   if (!meta) return <div className="page muted">加载中…</div>;
   const ec = meta.expert_cfg;
   return (
     <div className="page">
       <h1>系统介绍</h1>
       <p className="muted">这是一个帮你研究 A 股公司的助手。它只帮你查资料、核对事实、讲清楚利弊，不会替你买卖股票，也不构成投资建议。</p>
+
+      <h2>运行环境自检</h2>
+      <div className="card">
+        {healthErr ? <div className="error">{healthErr}</div> : !health ? <p className="muted">检查中…</p> : (
+          <>
+            <div className="kv"><span>数据库</span><b className={health.mongo ? "" : "warn-text"}>{health.mongo ? "连接正常" : "不可用"}</b></div>
+            <div className="kv"><span>可用技能</span>{health.skills.length} 个（取数 / 计算 / 搜索 / 研究 SOP）</div>
+            <ul className="small" style={{ margin: "6px 0 0" }}>
+              {health.skills.map((s) => (
+                <li key={s.name}><code>{s.name}</code> v{s.version} · {s.category} · {s.permission}</li>
+              ))}
+            </ul>
+          </>
+        )}
+        <div className="row-btns" style={{ marginTop: 10 }}>
+          <button onClick={loadHealth}>重新检查</button>
+        </div>
+      </div>
 
       <h2>一个问题是怎么被回答的</h2>
       <div className="grid">
