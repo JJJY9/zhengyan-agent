@@ -206,6 +206,22 @@ evals/             golden/（计算、路由金标）、cases/（对照用例）
 tests/             112 个测试（虚构数据 + 假模型，不联网；含 RSI 闭环、三期订阅/复核、四期模拟盘/晋级/回滚、API 冒烟）
 ```
 
+## 开发与质量
+
+```bash
+uv sync                              # 安装依赖（Python 3.12，uv.lock 锁定版本）
+.venv/bin/python -m pytest -q        # 全量测试：虚构数据 + 假模型，不联网、不需要 Key
+uv run ruff check src tests          # 正确性静态检查（未定义名/未使用导入等，F/E9）
+npm --prefix web run build           # 前端类型检查 + 构建（tsc -b && vite build）
+```
+
+Windows 下虚拟环境命令在 `.venv\Scripts\`（如 `.venv\Scripts\python -m pytest -q`）。
+
+- **离线可复现**：存储用 mongomock、模型与数据源用假替身，测试不依赖网络与 API Key；计算与门控规则另有金标用例（`evals/golden/`）。
+- **CI 三道门**：GitHub Actions 上 pytest、前端构建、ruff 正确性检查，任一失败不得合并。
+- **并发与一致性**：档案版本、策略卡晋级、RSI 运行、订阅复核、后台作业等状态机都有乐观锁 / 唯一索引 / 原子抢占，并配套并发回归测试。
+- **改动的自我约束**：RSI 的六道门控（协议、防泄漏、防过拟合、噪声、成本、回归）是纯代码约束，优化器无法修改；改评测器或门控需要人工评审。上线只能由人批准，变差可一键回滚。
+
 ## 已知限制
 
 - 财报数值来自东方财富结构化数据，可能含追溯调整（已标注 `PIT 弱`）；公告只取标题，未解析 PDF 正文。
