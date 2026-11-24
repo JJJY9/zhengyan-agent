@@ -2,7 +2,7 @@
 
 数字核验不只看数量级：涨跌方向（“下降/亏损” → 负号）、报告期年份、以及无单位的十进制数
 （如“营收 907.03”隐含亿元）都要与引用证据对得上；对不上就判存疑。
-中文数字（“一千亿”）暂不解析——这类主张会跳过数字复算，属于已知限制。
+中文数字（如“一千亿”“三千五百万”）会解析为金额参与复算；无单位的零散中文数字不处理。
 """
 import re
 from collections import Counter
@@ -17,6 +17,31 @@ _SCALE = {"亿元": Decimal(10) ** 8, "亿": Decimal(10) ** 8, "万元": Decimal
 _DOWN = re.compile(r"下降|下滑|减少|降低|回落|负增长|下跌|降幅|亏损|下调|收窄")
 _UP = re.compile(r"上升|上涨|增长|提升|提高|增加|增幅|改善|回升")
 _YEAR = re.compile(r"(20\d{2})\s*年")
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000}
+_CN = re.compile(r"([零〇一二两三四五六七八九十百千万亿]{1,16})\s*(亿元|万元|亿|万|元)")
+
+
+def cn_decimal(text: str) -> Decimal | None:
+    """中文数字 → Decimal：支持 十/百/千 与 万/亿 分段（“一千亿”“三千五百万”的数字部分）。"""
+    total = section = number = Decimal(0)
+    for ch in text:
+        if ch in _CN_DIGIT:
+            number = Decimal(_CN_DIGIT[ch])
+        elif ch in _CN_UNIT:
+            section += (number if number else Decimal(1)) * _CN_UNIT[ch]
+            number = Decimal(0)
+        elif ch == "万":
+            section = (section + number) * Decimal(10000)
+            total += section
+            section = number = Decimal(0)
+        elif ch == "亿":
+            section = (section + number) * Decimal(10) ** 8
+            total += section
+            section = number = Decimal(0)
+        else:
+            return None
+    return total + section + number
 _DIR_WINDOW = 10                 # 方向词只在此字数内生效
 _SCALED_SCALES = (Decimal(1), Decimal(10) ** 4, Decimal(10) ** 8)   # 无单位数字按 个/万/亿 三档刻度匹配
 
@@ -54,6 +79,18 @@ def extract_numbers(text: str) -> list[tuple[Decimal, Decimal, str, str]]:
             out.append((sign * abs(value), half + Decimal("0.0001"), "multiple", raw))
         else:
             out.append((abs(value), half + Decimal("0.0001"), "pp", raw))
+    for m in _CN.finditer(text):
+        if any(s <= m.start() < e for s, e in spans):        # 属于阿拉伯数字的单位（如“907.03亿元”）不重复解析
+            continue
+        if not any(ch in _CN_DIGIT for ch in m.group(1)):    # 纯“亿/万”等量词不算数字
+            continue
+        value = cn_decimal(m.group(1))
+        if value is None:
+            continue
+        scale = _SCALE.get(m.group(2), Decimal(1))
+        tol = Decimal("0.5") * scale + Decimal("0.0001")      # 约数：半个最小单位
+        sign = _direction(text, m.start())
+        out.append((sign * value * scale, tol, "amount", m.group(0)))
     for m in _BARE.finditer(text):
         if any(s <= m.start() < e for s, e in spans):     # 已带单位的数字不重复解析
             continue

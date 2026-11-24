@@ -124,3 +124,25 @@ def test_cross_field_numbers_are_rejected():
     assert claim("归母净利润50亿元").status == "verified"
     assert claim("扣非净利润907.03亿元").status == "disputed"      # 907.03 是营收，不是利润
     assert claim("归母净利润907.03亿元").status == "disputed"
+
+
+def test_chinese_numerals_are_parsed_and_checked():
+    big = card("big", metrics=[Metric(name="营业收入", field="OPERATE_INCOME", value=Decimal("100000000000"), unit="元",
+                                      period="2026-06-30", basis="cumulative")])
+    ev = {**EV, "big": big}
+
+    def claim(text):
+        return verify_claim(Claim(id="x", text=text, kind="fact", evidence_ids=["big"]), ev, AS_OF)
+
+    assert extract_numbers("约一千亿元")[0][0] == Decimal("100000000000")
+    assert claim("营业收入约一千亿元").status == "verified"
+    assert claim("营业收入九百亿元").status == "disputed"        # 1000 亿 ≠ 900 亿
+
+
+def test_chinese_negative_amount_direction():
+    loss = card("n", metrics=[Metric(name="归母净利润", field="NP", value=Decimal("-5000000000"), unit="元",
+                                     period="2026-06-30", basis="cumulative")])
+    ev = {**EV, "n": loss}
+    ok = verify_claim(Claim(id="x", text="归母净利润亏损五十亿元", kind="fact", evidence_ids=["n"]), ev, AS_OF)
+    bad = verify_claim(Claim(id="y", text="归母净利润五十亿元", kind="fact", evidence_ids=["n"]), ev, AS_OF)
+    assert ok.status == "verified" and bad.status == "disputed"
