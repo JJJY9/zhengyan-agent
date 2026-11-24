@@ -1,7 +1,7 @@
 """① 收集坏案例：从质询裁决、核验结果、路由评测、搜索记录里自动登记，强制四要素。"""
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
 from advisor.rsi.ledger import Ledger
@@ -114,17 +114,37 @@ def host_of(url: str) -> str:
 
 
 def cached_results(repo) -> dict[str, list[dict]]:
-    """缓存的原始搜索结果，按原始搜索词归并（缓存键里的搜索词带了时点与站点排除后缀）。"""
+    """缓存的原始搜索结果，按原始搜索词归并（缓存键里的搜索词带了时点与站点排除后缀）。
+
+    每行带上缓存键里的搜索时点 `_cache_as_of`；日期晚于该时点的结果线上拿不到，直接剔除。
+    """
     out: dict[str, list[dict]] = {}
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0, "key": 1, "value": 1}):
-        q = _QUERY_SUFFIX.split(doc["key"].split(":", 4)[4])[0].strip()
-        out.setdefault(q, []).extend(doc.get("value") or [])
+        _, _, as_of, _, query = doc["key"].split(":", 4)
+        q = _QUERY_SUFFIX.split(query)[0].strip()
+        rows = [{**r, "_cache_as_of": as_of} for r in doc.get("value") or []]
+        out.setdefault(q, []).extend(r for r in rows if not _after_as_of(r))
     return out
+
+
+def _after_as_of(r: dict) -> bool:
+    """结果日期晚于其搜索时点：线上 web.search 会以 after_as_of 丢弃，坏案例也不能算它。"""
+    from advisor.evidence.grading import cst_date
+    raw, as_of = r.get("date"), r.get("_cache_as_of")
+    if not raw or not as_of:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return cst_date(dt) > date.fromisoformat(str(as_of)[:10])
+    except ValueError:
+        return False
 
 
 def usable(r: dict, b_min: int, allow: tuple[str, ...], block: tuple[str, ...]) -> bool:
     """可用结果：不在黑名单、被评为权威、并且能抓取原文（才可能升为 B 级证据）。"""
     from advisor.skills.data.web import host_matches
+    if _after_as_of(r):
+        return False
     url = r.get("url") or ""
     return bool(url) and not host_matches(url, block) and int(r.get("authority") or -1) >= b_min and host_matches(url, allow)
 

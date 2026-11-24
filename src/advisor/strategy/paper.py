@@ -50,15 +50,20 @@ class PaperBook:
             return {}, None, []
         cards = self.deps.repo.get_evidence(d.evidence_ids)
         facts: dict[str, Any] = {k: m.value for k, m in metric_facts(cards).items()}
+        facts.pop("close", None)          # 价格只认当天行情：档案里的是研究时点价，不是今天能成交的价
         ev_ids = [c.id for c in cards if c.source_type in ("market", "calc")]
         try:
             live = h.call("market.daily", code=ticker, as_of=day).cards
-            facts.update({k: m.value for k, m in metric_facts(live).items()})   # 行情用当天的，基本面用档案的
-            ev_ids = [c.id for c in live] + ev_ids
-            for c in live:
-                self.deps.repo.put_evidence(c)
+            live_facts = metric_facts(live)
+            close = live_facts.get("close")
+            if close is not None and str(close.period)[:10] == day.isoformat():
+                facts.update({k: m.value for k, m in live_facts.items()})   # 行情用当天的，基本面用档案的
+                ev_ids = [c.id for c in live] + ev_ids
+                for c in live:
+                    self.deps.repo.put_evidence(c)
+            # 停牌/周末/节假日时数据源返回最后一条历史 K 线（period < day）：没有当日报价就不交易
         except (SkillFailed, HarnessDenied, BudgetExceeded):
-            facts.pop("close", None)                                          # 没有当天价格就不交易
+            pass
         facts.update(status=d.status, verified=sum(c.status == "verified" for c in d.claims),
                      disputed=sum(c.status == "disputed" for c in d.claims), open_alerts=self.open_alerts(ticker))
         return facts, d, ev_ids[:6]
@@ -70,6 +75,8 @@ class PaperBook:
     def step(self, card: StrategyVersion, day: date) -> NavPoint:
         if card.status not in ("paper", "review", "promoted"):
             raise PaperError(f"{card.ref} 不在模拟中")
+        if day > date.today():
+            raise PaperError(f"{day} 晚于今天：模拟盘不能推进到未来")
         if card.paper_start and day < card.paper_start:
             raise PaperError(f"{day} 早于模拟开始日 {card.paper_start}：模拟盘只能向前")
         navs = self.store.navs_of(card.card_id, card.version)
@@ -83,6 +90,10 @@ class PaperBook:
                               Budget(limits=self.deps.policy.route("quick").budget), node="paper", principal="paper")
         trades, notes = [], []
         snap = {t: self.facts(h, t, day) for t in dict.fromkeys(list(held) + self.universe(card))}
+        # 有档案却没有任何标的当天有行情：周末/节假日/全部停牌。不生成净值点，
+        # 否则晋级门控会把日历日当成「前向交易日」计数。
+        if any(d is not None for _, d, _ in snap.values()) and not any(f.get("close") is not None for f, _, _ in snap.values()):
+            raise PaperError(f"{day} 没有当日行情（非交易日或全部停牌），不生成净值点")
 
         def trade(t: str, side: str, shares: int, price: float, reason: str):
             _, d, ev = snap[t]

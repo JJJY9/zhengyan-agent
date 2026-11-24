@@ -88,7 +88,8 @@ class RSIRunner:
     def _top_up_routing(self, log: Callable[[str], None]) -> None:
         """噪声门控至少需要 3 次独立的判别器运行。"""
         from advisor.evals.routing import run_routing_eval
-        have = self.deps.repo.db.eval_runs.count_documents({"type": "routing"})
+        have = self.deps.repo.db.eval_runs.count_documents(
+            {"type": "routing", "status": "done", "rows.0": {"$exists": True}})   # 失败/无数据的评测不算一次重复
         for i in range(max(MIN_ROUTING_RUNS - have, 0)):
             log(f"补跑路由评测 {i + 1}/{MIN_ROUTING_RUNS - have}（噪声门控需要 ≥{MIN_ROUTING_RUNS} 次独立运行）")
             run_routing_eval(self.deps)

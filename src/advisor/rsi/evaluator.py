@@ -52,11 +52,31 @@ def _stat(values: list[float]) -> dict:
             "spread": round(max(values) - min(values), 4) if values else None}
 
 
+def _future(r: dict, as_of: str | None) -> bool:
+    """结果日期晚于其搜索时点：线上 web.search 会以 after_as_of 丢弃，评测与坏案例也不能算它。"""
+    from advisor.evidence.grading import cst_date
+    raw = r.get("date")
+    if not raw or not as_of:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        return cst_date(dt) > date.fromisoformat(str(as_of)[:10])
+    except ValueError:
+        return False
+
+
 def frozen_replay(ledger: Ledger, scenario: str, candidates: list[str]) -> list[str]:
-    """固定回放集：首次评测时冻结，此后不随数据增长而变化（并发评测时以先写入者为准）。"""
+    """固定回放集：首次评测时冻结，此后不随数据增长而变化（并发评测时以先写入者为准）。
+
+    没有可冻结的样本时拒绝评测：把空集冻结会让之后每轮评测都「无题可考」却仍自证协议一致。
+    """
     doc = ledger.db.rsi_protocols.find_one({"scenario": scenario})
     if doc:
+        if not doc.get("replay_ids"):
+            raise ValueError(f"{scenario} 的冻结回放集为空（历史遗留），无法按同一套题评测")
         return doc["replay_ids"]
+    if not candidates:
+        raise ValueError(f"{scenario} 没有可冻结的回放样本，无法评测")
     ids = sorted(candidates)
     try:
         ledger.db.rsi_protocols.insert_one({"scenario": scenario, "replay_ids": ids, "hash": _h(ids),
@@ -130,6 +150,7 @@ def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], ca
         "holdout": [it for it in items if it["ticker"] not in evo_tickers],
     }
     protocol = {"scorer": S1_SCORER, "replay_hash": _h(sorted(replay_ids)), "hash": _h(S1_SCORER, S1_JUDGE_SYSTEM, {k: sorted(x["id"] for x in v) for k, v in slices.items()}),
+                "replay_loaded": len(slices["replay"]), "replay_frozen": len(replay_ids),
                 "slices": {k: {"n": len(v), "bad": sum(x["label"] == "bad" for x in v)} for k, v in slices.items()}}
     h = deps.harness(f"rsi-{run.run_id}", "quick", date.today(), Budget(limits={"tokens": 2_000_000, "wall_clock_s": 3600}),
                      node="rsi_eval", principal="evaluator")
@@ -146,8 +167,11 @@ def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], ca
                 if not sl:
                     continue
                 verdicts, t = _judge(h, sl, cards)
+                missing = [it["id"] for it in sl if it["id"] not in verdicts]
+                if missing:      # 漏判不能当「不需要检查」算对：本次评测无效
+                    raise ValueError(f"判官漏判 {len(missing)} 条主张（如 {missing[:3]}），无法给本次评测打分")
                 tokens += t
-                per_slice[name].append(balanced_accuracy([(it["label"], verdicts.get(it["id"], False)) for it in sl]))
+                per_slice[name].append(balanced_accuracy([(it["label"], verdicts[it["id"]]) for it in sl]))
             log(f"S1 评测 {arm} 第 {rep + 1}/{REPEATS} 轮完成")
         arms[arm] = {"slices": {k: _stat(v) for k, v in per_slice.items() if v}, "tokens": tokens,
                      "cards": [c.id for c in cards]}
@@ -162,7 +186,10 @@ def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], ca
 def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None] = lambda m: None) -> dict:
     """在多次独立判别器运行记录下的原始概率上回放：每次评测运行就是一次独立重复，天然暴露判别器自身的随机波动。"""
     from advisor.routing import route_from_probs
-    runs = list(deps.repo.db.eval_runs.find({"type": "routing"}, projection={"_id": 0}).sort("created_at", -1).limit(5))
+    # 只统计可评分的运行：失败/没有 rows 的评测文档不算一次独立重复
+    runs = list(deps.repo.db.eval_runs.find({"type": "routing", "status": "done", "rows.0": {"$exists": True}},
+                                            projection={"_id": 0}).sort("created_at", -1).limit(5))
+    runs = [r for r in runs if r.get("rows")]
     issues = ledger.get_issues(run.issue_ids)
     evo_q = {i.source["question"] for i in issues}
     all_q = sorted({r["question"] for rr in runs for r in rr.get("rows", [])})
@@ -197,9 +224,11 @@ def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
                         recall_.append(dr)
         arms[arm] = {"slices": {k: _stat(v) for k, v in per.items() if v}, "deep_recall": _stat(recall_), "tokens": 0, "params": cfg}
     log(f"S2 回放 {len(runs)} 次独立判别器运行")
+    loaded_q = {r["question"] for rr in runs for r in rr.get("rows", [])} & replay_q
     return {"scenario": "S2", "repeats": len(runs), "arms": arms, "primary": "replay",
             "metric": "路由准确率（每次判别器运行算一次重复）",
             "protocol": {"scorer": S2_SCORER, "replay_hash": _h(sorted(replay_q)), "hash": _h(S2_SCORER, sorted(replay_q), sorted(r["run_id"] for r in runs)),
+                         "replay_loaded": len(loaded_q), "replay_frozen": len(replay_q),
                          "slices": {k: {"n": len(v)} for k, v in slices.items()}, "eval_runs": [r["run_id"] for r in runs]},
             "leakage": {"evolution": sorted(evo_q), "holdout": sorted(slices["holdout"])}}
 
@@ -220,6 +249,8 @@ def search_f(searches: list[dict], cfg: dict, policy) -> dict:
     kept = good_kept = good_all = 0
     for s in searches:
         for r in s["raw"]:
+            if _future(r, s.get("as_of")):          # 未来日期的结果线上拿不到，不能算进 F 值
+                continue
             url = r.get("url") or ""
             if not url or host_matches(url, policy.block_sites):
                 continue
@@ -263,6 +294,7 @@ def evaluate_s3(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
     return {"scenario": "S3", "repeats": REPEATS, "deterministic": True, "arms": arms, "primary": "evolution",
             "metric": "可用线索的 F 值（保留结果里权威且可抓取的占比 × 权威结果被保留并可抓取的占比）",
             "protocol": {"scorer": S3_SCORER, "replay_hash": _h(sorted(replay_ids)), "hash": _h(S3_SCORER, sorted(replay_ids)),
+                         "replay_loaded": len(slices["replay"]), "replay_frozen": len(replay_ids),
                          "slices": {k: {"n": len(v)} for k, v in slices.items()}},
             "leakage": {"evolution": sorted(s["id"] for s in slices["evolution"]),
                         "holdout": sorted(s["id"] for s in slices["holdout"])}}
@@ -336,6 +368,7 @@ def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: 
             "metric": "专家搜索词带回的结果里，权威且可抓取的占比",
             "protocol": {"scorer": S3_HINT_SCORER, "replay_hash": _h(sorted(replay_ids)),
                          "hash": _h(S3_HINT_SCORER, sorted(replay_ids)),
+                         "replay_loaded": len(slices["replay"]), "replay_frozen": len(replay_ids),
                          "slices": {k: {"n": len(v)} for k, v in live.items()}},
             "leakage": {"evolution": sorted({r["ticker"] for r in live["evolution"]}),
                         "holdout": sorted({r["ticker"] for r in live["holdout"]})},
