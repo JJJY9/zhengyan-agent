@@ -73,6 +73,7 @@ function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi }: {
   collapsed: boolean; onCollapse: () => void; watch: WatchRow[] | null; tasks: Task[]; pendingRsi: number;
 }) {
   const openAlerts = (watch ?? []).reduce((n, w) => n + (w.open_alerts ?? 0), 0);
+  const activeTasks = tasks.filter((t) => ["queued", "running", "waiting_approval"].includes(t.status)).length;
   const loc = useLocation();
   const [moreWatch, setMoreWatch] = useState(false);
   const [moreTasks, setMoreTasks] = useState(false);
@@ -128,7 +129,9 @@ function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi }: {
           })}
           <MoreToggle total={watch?.length ?? 0} open={moreWatch} onToggle={() => setMoreWatch(!moreWatch)} />
         </div>
-        <div className="sb-sec"><span className="grow">最近研究</span></div>
+        <div className="sb-sec"><span className="grow">最近研究</span>
+          {activeTasks > 0 && <span className="count" title="进行中或等待确认的任务">{activeTasks}</span>}
+        </div>
         <div className="sb-hist">
           {tasks.slice(0, moreTasks ? 20 : SIDEBAR_LIMIT).map((t) => <Link key={t.task_id} to={`/tasks/${t.task_id}`} title={t.request.question}>{t.request.question}</Link>)}
           <MoreToggle total={Math.min(tasks.length, 20)} open={moreTasks} onToggle={() => setMoreTasks(!moreTasks)} />
@@ -315,6 +318,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     api.rsi.runs().then((rs) => setPendingRsi(rs.filter((r) => r.status === "review" || r.status === "approved").length)).catch(() => undefined);
   }, []);
   useEffect(refresh, [refresh]);
+  // 有进行中/待确认任务时每 4 秒刷新一次侧栏计数；全部结束后自动停止
+  useEffect(() => {
+    if (!tasks.some((t) => ["queued", "running", "waiting_approval"].includes(t.status))) return;
+    const timer = window.setTimeout(refresh, 4000);
+    return () => window.clearTimeout(timer);
+  }, [tasks, refresh]);
   useEffect(() => save("sb-collapsed", collapsed), [collapsed]);
   useEffect(() => save("ask-open", askOpen), [askOpen]);
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
