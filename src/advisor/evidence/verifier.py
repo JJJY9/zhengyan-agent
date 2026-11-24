@@ -69,15 +69,32 @@ def extract_numbers(text: str) -> list[tuple[Decimal, Decimal, str, str]]:
     return out
 
 
-def _candidates(cards: list[EvidenceCard], years: set[str]) -> dict[str, list[Decimal]]:
-    """按单位分池；claim 提到年份时只保留该年份报告期的指标（无报告期的保留）。"""
-    amounts, pcts, multiples = [], [], []
+def _bigrams(text: str) -> set[str]:
+    s = "".join(ch for ch in text if not ch.isspace() and ch not in "，。、；：（）()%,.;:+-—…/·")
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _candidates(cards: list[EvidenceCard], years: set[str], claim_text: str = "") -> dict[str, list[Decimal]]:
+    """按单位分池；claim 提到年份时只保留该年份报告期的指标（无报告期的保留）。
+
+    指标归属：主张文本与某个指标名共享 2 字片段时，只用这些「同口径」指标做候选，
+    避免拿营收去给「扣非净利润 907.03 亿」背书；一个都对不上时退回全部指标（避免误伤）。
+    """
+    metrics = []
     for c in cards:
         for m in c.metrics:
             period_year = str(m.period)[:4]
             if years and period_year and period_year not in years:
                 continue
-            {"%": pcts, "倍": multiples}.get(m.unit, amounts).append(m.value)
+            metrics.append(m)
+    if claim_text and metrics:
+        claim_bg = _bigrams(claim_text)
+        named = [m for m in metrics if _bigrams(m.name) & claim_bg]
+        if named:
+            metrics = named
+    amounts, pcts, multiples = [], [], []
+    for m in metrics:
+        {"%": pcts, "倍": multiples}.get(m.unit, amounts).append(m.value)
     pps = [abs(a - b) for i, a in enumerate(pcts) for b in pcts[i + 1:]]
     return {"amount": amounts, "pct": pcts, "pp": pps + pcts, "multiple": multiples + [p / 100 for p in pcts]}
 
@@ -128,7 +145,7 @@ def verify_claim(claim: Claim, evidence: dict[str, EvidenceCard], as_of: date) -
         # 血缘：引用计算卡时，其来源财报也算作被引用
         lineage = [evidence[i] for c in usable if c.source_type == "calc" for i in c.derived_from if i in evidence]
         years = set(_YEAR.findall(claim.text))
-        a_pool = _candidates([c for c in usable + lineage if c.level == "A"], years)
+        a_pool = _candidates([c for c in usable + lineage if c.level == "A"], years, claim.text)
         b_text = " ".join(c.excerpt for c in usable if c.level == "B")
         for value, tol, kind, raw in numbers:
             ok = _matches_scaled(value, tol, a_pool) if kind == "scaled" else _matches(value, tol, a_pool[kind])
