@@ -43,6 +43,12 @@ def _dt(d: date) -> datetime:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
+def _pit_ok(r: dict, as_of: date) -> bool:
+    """整行可用：报告期与披露日都能解析，且披露不晚于研究时点。NaT 等脏值按缺失处理。"""
+    notice = _d(r.get("NOTICE_DATE"))
+    return bool(_d(r.get("REPORT_DATE"))) and notice is not None and notice <= as_of
+
+
 class StatementsIn(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
     as_of: date
@@ -73,13 +79,11 @@ class CardsOut(BaseModel):
 
 def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> list[Skill]:
     def statements(inp: StatementsIn) -> StatementsOut:
-        income = [r for r in source.income_rows(inp.code) if _d(r.get("NOTICE_DATE")) and _d(r["NOTICE_DATE"]) <= inp.as_of]
+        income = [r for r in source.income_rows(inp.code) if _pit_ok(r, inp.as_of)]
         if not income:
             raise SkillFailed(f"{inp.code} 在 {inp.as_of} 之前没有已披露的利润表")
-        cash = {r["REPORT_DATE"][:10]: r for r in source.cashflow_rows(inp.code)
-                if _d(r.get("NOTICE_DATE")) and _d(r["NOTICE_DATE"]) <= inp.as_of}
-        balance = {r["REPORT_DATE"][:10]: r for r in source.balance_rows(inp.code)
-                   if _d(r.get("NOTICE_DATE")) and _d(r["NOTICE_DATE"]) <= inp.as_of}
+        cash = {r["REPORT_DATE"][:10]: r for r in source.cashflow_rows(inp.code) if _pit_ok(r, inp.as_of)}
+        balance = {r["REPORT_DATE"][:10]: r for r in source.balance_rows(inp.code) if _pit_ok(r, inp.as_of)}
         income.sort(key=lambda r: r["REPORT_DATE"], reverse=True)
         name = income[0].get("SECURITY_NAME_ABBR") or inp.code
         sym = exchange_prefix(inp.code) + inp.code
@@ -115,7 +119,9 @@ def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> l
 
     def daily(inp: DailyIn) -> CardsOut:
         rows = source.daily(inp.code, inp.as_of - timedelta(days=inp.lookback_days), inp.as_of)
-        rows = [r for r in rows if r.get("close") is not None and _d(r["date"]) <= inp.as_of]
+        rows = [r for r in rows if r.get("close") is not None
+                and (day := _d(r.get("date"))) is not None and day <= inp.as_of]
+        rows.sort(key=lambda r: r["date"])      # 数据源顺序不作假设，区间统计按日期升序
         if len(rows) < 21:
             raise SkillFailed(f"{inp.code} 行情数据不足")
         closes = [Decimal(str(r["close"])) for r in rows]
@@ -153,7 +159,7 @@ def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> l
 
     def announcements(inp: AnnouncementsIn) -> CardsOut:
         rows = source.announcements(inp.code, inp.as_of - timedelta(days=inp.lookback_days), inp.as_of)
-        rows = [r for r in rows if r.get("date") and _d(r["date"]) <= inp.as_of][: inp.limit]
+        rows = [r for r in rows if (day := _d(r.get("date"))) is not None and day <= inp.as_of][: inp.limit]
         cards = [
             factory.make(
                 content=json.dumps(r, ensure_ascii=False, sort_keys=True), level="A", source_type="announcement",
