@@ -194,3 +194,13 @@ def test_evals_require_llm_key(client, service):
         assert "DEEPSEEK" in detail                      # 明确告诉用户需要先配 Key，而不是静默提交必然失败的作业
     finally:
         del service.deps.llm.configured
+
+
+def test_export_rsi_ledger(client, service):
+    from advisor.services import Services
+
+    Services(service.deps, service).rsi.ledger.bootstrap(service.deps.policy)
+    r = client.get("/api/rsi/export.json")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    body = r.json()
+    assert {"assets", "runs", "issues", "events"} <= set(body) and len(body["assets"]) >= 3
