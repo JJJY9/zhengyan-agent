@@ -186,8 +186,25 @@ def test_statements_skip_rows_missing_report_date():
     assert len(out.cards) == 6                    # cash/balance 缺 REPORT_DATE 的行不参与合并、不崩
 
 
-def test_valuation_keeps_balance_rows_with_unparseable_report_date():
+def test_valuation_prefers_dated_balance_rows_over_undated():
+    """报告期可解析的行优先；REPORT_DATE=NaT 的行不覆盖已知报告期（只能作兜底）。"""
     out = _run(_skills(_BalanceDirtyReport()), "valuation.snapshot")
+    last = max(_base_daily(), key=lambda r: r["date"])
+    assert _metric(out, "mkt_cap").value == q(Decimal(last["close"]) * SHARES)
+
+
+class _BalanceOnlyUndated(FakeSource):
+    """所有资产负债表行的 REPORT_DATE 都缺失：退化为按披露日取最新。"""
+
+    def balance_rows(self, code):
+        return [
+            {"REPORT_DATE": "NaT", "NOTICE_DATE": "2025-12-01 00:00:00", "SHARE_CAPITAL": "3000000000"},
+            {"REPORT_DATE": None, "NOTICE_DATE": "2026-08-15 00:00:00", "SHARE_CAPITAL": "2000000000"},
+        ]
+
+
+def test_valuation_uses_undated_balance_rows_as_fallback():
+    out = _run(_skills(_BalanceOnlyUndated()), "valuation.snapshot")
     last = max(_base_daily(), key=lambda r: r["date"])
     assert _metric(out, "mkt_cap").value == q(Decimal(last["close"]) * Decimal("2000000000"))
 

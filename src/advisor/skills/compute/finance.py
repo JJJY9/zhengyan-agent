@@ -74,13 +74,16 @@ def ratio(numerator: Metric, denominator: Metric, name: str, field: str) -> Metr
 
 
 def price_change(closes: list[Decimal], window: int) -> Decimal | None:
-    if len(closes) <= window or closes[-window - 1] == 0:
+    if window < 1 or len(closes) <= window or closes[-window - 1] <= 0:
         return None
     return q((closes[-1] / closes[-window - 1] - 1) * 100)
 
 
 def annualized_volatility(closes: list[Decimal], window: int = 60) -> Decimal | None:
-    if len(closes) <= window:
+    if window < 2 or len(closes) <= window:
+        return None
+    recent = closes[-(window + 1):]
+    if any(c <= 0 for c in recent):          # 0/负价（停牌脏行、复权异常）算不出有意义的收益率
         return None
     rets = [closes[i] / closes[i - 1] - 1 for i in range(len(closes) - window, len(closes))]
     mean = sum(rets) / len(rets)
@@ -89,14 +92,14 @@ def annualized_volatility(closes: list[Decimal], window: int = 60) -> Decimal | 
 
 
 def moving_average(closes: list[Decimal], window: int) -> Decimal | None:
-    if len(closes) < window:
+    if window < 1 or len(closes) < window:
         return None
     return sum(closes[-window:]) / window
 
 
 def max_drawdown(closes: list[Decimal]) -> Decimal | None:
-    """区间最大回撤（%，负数）。"""
-    if len(closes) < 2:
+    """区间最大回撤（%，负数）；价格必须全为正，否则回撤无意义。"""
+    if len(closes) < 2 or any(c <= 0 for c in closes):
         return None
     peak, worst = closes[0], Decimal(0)
     for c in closes:
@@ -106,19 +109,42 @@ def max_drawdown(closes: list[Decimal]) -> Decimal | None:
     return q(worst * 100)
 
 
+def _period_key(period: str) -> str | None:
+    """报告期统一为 YYYY-MM-DD：接受 YYYY-MM-DD 与紧凑 YYYYMMDD；其他格式返回 None。"""
+    p = (period or "").strip()
+    try:
+        if len(p) >= 10 and p[4] == "-":
+            return date.fromisoformat(p[:10]).isoformat()
+        if len(p) == 8 and p.isdigit():
+            return f"{p[:4]}-{p[4:6]}-{p[6:]}"
+    except ValueError:
+        return None
+    return None
+
+
 def ttm(cumulative: dict[str, Decimal], period: str) -> Decimal | None:
     """滚动四季度：年报直接用；否则 = 本期累计 + 上年年报 - 上年同期累计。缺任一项返回 None。"""
-    y, md = int(period[:4]), period[4:]
+    p = _period_key(period)
+    if p is None:
+        return None
+    cum: dict[str, Decimal] = {}
+    for k, v in cumulative.items():
+        key = _period_key(k)
+        if key is not None:
+            cum[key] = v
+    y, md = p[:4], p[4:]
     if md == "-12-31":
-        return cumulative.get(period)
-    cur, fy, prior = cumulative.get(period), cumulative.get(f"{y - 1}-12-31"), cumulative.get(f"{y - 1}{md}")
+        return cum.get(p)
+    cur, fy, prior = cum.get(p), cum.get(f"{int(y) - 1}-12-31"), cum.get(f"{int(y) - 1}{md}")
     if cur is None or fy is None or prior is None:
         return None
     return cur + fy - prior
 
 
 def percentile_rank(values: list[Decimal], x: Decimal) -> Decimal | None:
+    """x 在窗口中的分位（0~100）：低于 x 的计 1、等于 x 的计 0.5（中位秩，全相等窗口为 50）。"""
     if not values:
         return None
-    below = sum(1 for v in values if v <= x)
-    return q(Decimal(below) / Decimal(len(values)) * 100)
+    below = sum(1 for v in values if v < x)
+    equal = sum(1 for v in values if v == x)
+    return q((Decimal(below) + Decimal(equal) / 2) / Decimal(len(values)) * 100)

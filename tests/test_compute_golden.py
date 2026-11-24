@@ -5,7 +5,8 @@ import pytest
 
 from advisor.contracts import Metric
 from advisor.settings import ROOT
-from advisor.skills.compute.finance import BasisMismatch, annualized_volatility, price_change, ratio, same_basis_growth, single_quarter
+from advisor.skills.compute.finance import (BasisMismatch, annualized_volatility, max_drawdown, moving_average,
+                                            percentile_rank, price_change, ratio, same_basis_growth, single_quarter, ttm)
 
 CASES = json.loads((ROOT / "evals" / "golden" / "compute_cases.json").read_text(encoding="utf-8"))
 
@@ -68,3 +69,34 @@ def test_single_quarter_rejects_non_cumulative_previous():
     prev = m("OPERATE_INCOME", "100", "2026-03-31", basis="single_quarter")
     with pytest.raises(BasisMismatch):
         single_quarter(cum, prev)
+
+
+def test_ttm_formats_missing_and_dirty_periods():
+    dashed = {"2026-06-30": Decimal(91), "2025-12-31": Decimal(168), "2025-06-30": Decimal(90)}
+    assert ttm(dashed, "2026-06-30") == Decimal(169)
+    compact = {"20260630": Decimal(91), "20251231": Decimal(168), "20250630": Decimal(90)}
+    assert ttm(compact, "20260630") == Decimal(169)          # 紧凑期号与短横线格式等价
+    assert ttm({"2026-12-31": Decimal(168)}, "2026-12-31") == Decimal(168)
+    assert ttm({"2026-06-30": Decimal(91)}, "2026-06-30") is None   # 缺上年年报/上年同期
+    assert ttm({"2026-06-30": Decimal(91)}, "NaT") is None          # 脏期号按缺失处理
+
+
+def test_window_guards():
+    assert annualized_volatility([Decimal(10), Decimal(11)], 1) is None
+    assert annualized_volatility([Decimal(10), Decimal(11), Decimal(12)], 0) is None
+    assert moving_average([Decimal(1), Decimal(2)], 0) is None
+    assert price_change([Decimal(100), Decimal(110)], 0) is None
+
+
+def test_non_positive_prices_are_unusable():
+    assert annualized_volatility([Decimal(100), Decimal(100), Decimal(0), Decimal(100)], 3) is None
+    assert max_drawdown([Decimal(100), Decimal(0), Decimal(50)]) is None
+    assert max_drawdown([Decimal(100), Decimal(80)]) == Decimal("-20.00")
+    assert price_change([Decimal(0), Decimal(100)], 1) is None
+
+
+def test_percentile_rank_midrank():
+    assert percentile_rank([Decimal(5)] * 60, Decimal(5)) == Decimal("50.00")      # 平坦窗口给中性值
+    assert percentile_rank([Decimal(1)] * 59 + [Decimal(10)], Decimal(10)) == Decimal("99.17")
+    assert percentile_rank([Decimal(i) for i in range(1, 11)], Decimal(10)) == Decimal("95.00")
+    assert percentile_rank([], Decimal(1)) is None
