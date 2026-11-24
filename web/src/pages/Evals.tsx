@@ -45,18 +45,30 @@ export default function Evals() {
 
   const startCompare = async () => {
     if (!confirm("对照评测会对每个用例分别跑标准研究与争议深研（约 10-20 分钟，消耗 DeepSeek 额度）。继续？")) return;
-    const { run_id } = await api.startCompare({ routes: ["standard", "deep"] });
-    nav(`/evals/${run_id}`);
+    try {
+      const { run_id } = await api.startCompare({ routes: ["standard", "deep"] });
+      nav(`/evals/${run_id}`);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
   };
   const startUpdate = async () => {
-    const { run_id } = await api.startUpdateEval();
-    nav(`/evals/${run_id}`);
-    api.evals().then(setRuns);
+    try {
+      const { run_id } = await api.startUpdateEval();
+      nav(`/evals/${run_id}`);
+      api.evals().then(setRuns);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
   };
   const startRouting = async () => {
-    await api.startRoutingEval();
-    setMsg("路由校准已提交，约 1 分钟后刷新列表。");
-    setTimeout(() => setMsg(""), 60000);
+    try {
+      await api.startRoutingEval();
+      setMsg("路由校准已提交，约 1 分钟后刷新列表。");
+      setTimeout(() => setMsg(""), 60000);
+    } catch (e) {
+      setMsg((e as Error).message);
+    }
   };
 
   return (

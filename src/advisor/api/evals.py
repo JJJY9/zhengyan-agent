@@ -12,6 +12,11 @@ router = APIRouter(prefix="/api/evals")
 ROUTE_CHOICES = {"quick", "standard", "deep"}
 
 
+def _require_llm(svc: Svc) -> None:
+    if getattr(svc.deps.llm, "configured", True) is False:
+        raise HTTPException(400, "未配置 DEEPSEEK_API_KEY：路由校准与对照评测都需要模型参与，请先在 .env 中填写后重启服务")
+
+
 class CompareIn(BaseModel):
     case_ids: list[str] | None = None
     routes: list[str] = ["standard", "deep"]
@@ -32,6 +37,7 @@ def eval_run(run_id: str, svc: Svc):
 
 @router.post("/routing")
 def eval_routing(svc: Svc):
+    _require_llm(svc)
     from advisor.evals.routing import run_routing_eval
     svc.submit(run_routing_eval, svc.deps)
     return {"submitted": True}
@@ -52,6 +58,7 @@ def eval_compare(body: CompareIn, svc: Svc):
     cases = [c for c in load_cases() if not body.case_ids or c["id"] in body.case_ids]
     if not cases:
         raise HTTPException(400, "没有匹配的评测用例")
+    _require_llm(svc)
     run_id = "ev_" + uuid.uuid4().hex[:8]
     # 先登记评测文档再丢给后台线程：前端立即 GET /api/evals/{run_id} 不会 404
     svc.deps.repo.save_eval({"run_id": run_id, "type": "compare", "status": "running", "routes": body.routes,

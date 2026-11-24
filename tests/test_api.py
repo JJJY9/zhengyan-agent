@@ -184,3 +184,13 @@ def test_export_task_bundle(client):
     body = r.json()
     assert body["task"]["task_id"] == tid and "audit" in body and "working" in body
     assert client.get("/api/tasks/nope/export.json").status_code == 404
+
+
+def test_evals_require_llm_key(client, service):
+    service.deps.llm.configured = False
+    try:
+        assert client.post("/api/evals/routing").status_code == 400
+        detail = client.post("/api/evals/compare", json={"routes": ["standard"]}).json()["detail"]
+        assert "DEEPSEEK" in detail                      # 明确告诉用户需要先配 Key，而不是静默提交必然失败的作业
+    finally:
+        del service.deps.llm.configured
