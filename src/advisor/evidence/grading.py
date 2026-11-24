@@ -1,14 +1,21 @@
 """网页证据分级：B = 权威 + 已抓取快照 + 日期可知；其余为 C（只能触发补证）。A 级只来自结构化源。"""
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from advisor.contracts import SearchHit
+
+CST = timezone(timedelta(hours=8))
+
+
+def cst_date(dt: datetime) -> date:
+    """时间戳按北京时间取日历日：as_of 是北京日历日，UTC 晚间新闻的北京时间已是次日。"""
+    return dt.astimezone(CST).date() if dt.tzinfo else dt.date()
 
 
 def grade_web(hit: SearchHit, fetched: bool, as_of: date, authority_b_min: int = 3) -> tuple[str, list[str]]:
     caveats: list[str] = ["网页来源：数字须回到财报/公告复核后才能作为事实"]
     if hit.date is None:
         caveats.append("页面日期未知，无法确认时点")
-    elif hit.date.date() > as_of:
+    elif cst_date(hit.date) > as_of:
         caveats.append("页面日期晚于研究时点")
         return "C", caveats
     if hit.authority < 0:

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from advisor.contracts import SearchHit
 from advisor.contracts.skill import Skill, SkillSpec
+from advisor.evidence.grading import cst_date
 from advisor.harness.errors import SkillFailed
 from advisor.harness.ratelimit import TokenBucket
 from advisor.storage import Repository
@@ -142,7 +143,7 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
                 continue
             if not hit.url or host_matches(hit.url, policy.block_sites):
                 dropped["blocked_site"] += 1
-            elif hit.date and hit.date.date() > inp.as_of:
+            elif hit.date and cst_date(hit.date) > inp.as_of:
                 dropped["after_as_of"] += 1
             elif hit.rerank_score < rerank_min:
                 dropped["low_relevance"] += 1
