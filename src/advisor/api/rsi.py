@@ -1,5 +1,7 @@
 """RSI 自进化 API：闭环总览、坏案例、候选、门控、版本血缘、开/关经验库对照。耗时操作（提议、评测）在后台执行。"""
+import json
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from advisor.api.common import OWNER, Jobs, Svc, conflict_on
@@ -84,6 +86,20 @@ def overview(svc: Svc):
                          "last": g["last"]} for g in inherit],
         "self_approved": sum(e.get("self_approved", False) for e in events if e["action"] == "approve"),
     }
+
+
+@router.get("/export.json")
+def export_ledger(svc: Svc):
+    """RSI 账本完整导出（资产/运行/坏案例/事件），用于审计与离线分析。"""
+    led = svc.rsi.ledger
+    body = json.dumps({
+        "assets": [a.model_dump(mode="json") for a in led.list_assets()],
+        "runs": [x.model_dump(mode="json") for x in led.list_runs(limit=1000)],
+        "issues": [i.model_dump(mode="json") for i in led.list_issues()],
+        "events": led.list_events(limit=1000),
+    }, ensure_ascii=False, default=str)
+    return Response(body, media_type="application/json",
+                    headers={"Content-Disposition": 'attachment; filename="rsi_ledger.json"'})
 
 
 @router.get("/issues")

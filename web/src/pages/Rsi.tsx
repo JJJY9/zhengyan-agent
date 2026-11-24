@@ -64,7 +64,10 @@ export default function Rsi() {
   return (
     <>
       <PageHead title="递归自我改进" sub="RSI · 只改模型外面那一层，每一步都有日志"
-        right={<button onClick={collect} disabled={!!busy}>{busy === "collect" ? "收集中…" : "收集坏案例"}</button>} />
+        right={<>
+          <a className="button ghost" href="/api/rsi/export.json" download>导出账本 (.json)</a>
+          <button onClick={collect} disabled={!!busy}>{busy === "collect" ? "收集中…" : "收集坏案例"}</button>
+        </>} />
       <div className="page">
         {error && <div className="error">{error}</div>}
         {!ov ? <p className="muted">加载中…</p> : (
