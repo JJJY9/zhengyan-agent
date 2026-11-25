@@ -120,7 +120,10 @@ def _grid(center: float, step: float, lo: float, hi: float) -> list[float]:
 
 def propose_s2(deps, ledger: Ledger, issue_id: str | None, actor: str) -> Run:
     from advisor.routing import route_from_probs
-    issues = _pick(ledger, "S2", issue_id)
+    pending = {i for r in ledger.list_runs("S2") if r.status in ("draft", "review", "approved") for i in r.issue_ids}
+    issues = [i for i in _pick(ledger, "S2", issue_id) if i.id not in pending]   # 同一坏案例不重复提议
+    if not issues:
+        raise ProposeError("S2 的待处理坏案例都已有在途候选")
     base = ledger.active_asset("routing")
     released = ledger.released_count("routing")
     evo_q = {i.source["question"] for i in issues}

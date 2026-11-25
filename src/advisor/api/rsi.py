@@ -92,11 +92,15 @@ def overview(svc: Svc):
 def export_ledger(svc: Svc):
     """RSI 账本完整导出（资产/运行/坏案例/事件），用于审计与离线分析。"""
     led = svc.rsi.ledger
+    counts = {"assets": led.db.rsi_assets.count_documents({}), "runs": led.db.rsi_runs.count_documents({}),
+              "issues": led.db.rsi_issues.count_documents({}), "events": led.db.rsi_events.count_documents({})}
     body = json.dumps({
         "assets": [a.model_dump(mode="json") for a in led.list_assets()],
         "runs": [x.model_dump(mode="json") for x in led.list_runs(limit=1000)],
         "issues": [i.model_dump(mode="json") for i in led.list_issues()],
         "events": led.list_events(limit=1000),
+        "counts": counts,                         # 导出被截断时必须可见，不能声称完整
+        "truncated": {"runs": counts["runs"] > 1000, "events": counts["events"] > 1000},
     }, ensure_ascii=False, default=str)
     return Response(body, media_type="application/json",
                     headers={"Content-Disposition": 'attachment; filename="rsi_ledger.json"'})
@@ -147,8 +151,9 @@ def collect(svc: Svc):
 def propose(body: ProposeIn, svc: Svc, jobs: Jobs):
     if body.scenario not in ("S1", "S2", "S3"):
         raise HTTPException(400, "scenario 只能是 S1/S2/S3")
+    # 作业键带坏案例 id：并发的另一个 issue_id 提议不能被静默吞掉（同键运行中会复用旧作业）
     return jobs.start(svc, "propose", lambda log: svc.rsi.propose(body.scenario, body.issue_id, OWNER),
-                      key=f"propose:{body.scenario}")
+                      key=f"propose:{body.scenario}:{body.issue_id or '-'}")
 
 
 @router.post("/runs/{run_id}/evaluate")

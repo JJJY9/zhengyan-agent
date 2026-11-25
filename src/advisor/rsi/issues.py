@@ -111,7 +111,13 @@ def s3_issues(repo) -> list[Issue]:
 
 
 def host_of(url: str) -> str:
-    host = urlparse(url or "").netloc.lower().split(":")[0]
+    """与 web.fetch 的 _host 同口径：urlparse().hostname（去 userinfo/端口、小写、去尾点）。
+
+    手拆 netloc 会把 `https://eastmoney.com:443@evil.com/x` 的 userinfo 当主机名。"""
+    try:
+        host = (urlparse(url or "").hostname or "").lower().rstrip(".")
+    except ValueError:
+        return ""
     return host.removeprefix("www.")
 
 

@@ -1,4 +1,5 @@
 """DeepSeek Search / Fetch：只作为线索发现层。结果须经过滤、分级、快照后才成为证据。"""
+import re
 from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +15,8 @@ from advisor.harness.ratelimit import TokenBucket
 from advisor.storage import Repository
 
 MAX_QUERY = 128
+# 自媒体 / 用户生成内容平台：即使搜索引擎给了高权威分、即使被 RSI 追加进白名单，也不能抓取
+UGC_HOST = re.compile(r"weixin|toutiao|sohu|163\.com|baijiahao|zhihu|weibo|douyin|bilibili|xueqiu|guba|tieba|futunn|longbridge")
 
 
 class DeepSeekTools:
@@ -67,9 +70,16 @@ def host_matches(url: str, domains: tuple[str, ...]) -> bool:
     )
 
 
+def is_ugc_host(url_or_host: str) -> bool:
+    return bool(UGC_HOST.search(_host(url_or_host)))
+
+
 def fetch_allowlist(policy, params: dict) -> tuple[str, ...]:
-    """抓取白名单 = sites.yaml + RSI 检索模板里经人工批准追加的站点（只能追加，不能删减黑名单）。"""
-    extra = tuple(d for d in params.get("fetch_allow_add", []) if d and not host_matches(d, policy.block_sites))
+    """抓取白名单 = sites.yaml + RSI 检索模板里经人工批准追加的站点（只能追加，不能删减黑名单）。
+
+    追加站点在运行时再次过滤：黑名单与自媒体平台即使混进模板也拿不到抓取资格（门控之外的第二道闸）。"""
+    extra = tuple(d for d in params.get("fetch_allow_add", [])
+                  if d and not host_matches(d, policy.block_sites) and not is_ugc_host(d))
     return policy.fetch_allow + extra
 
 
@@ -159,6 +169,8 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
                    else fetch_allowlist(policy, params()))
         if host_matches(inp.url, policy.block_sites):                # 黑名单优先：父域在白名单也不能抓
             raise SkillFailed(f"域名在黑名单: {urlparse(inp.url).hostname}")
+        if is_ugc_host(inp.url):                                     # 自媒体平台不走白名单：父域放行也不行
+            raise SkillFailed(f"域名是自媒体或用户生成内容平台: {urlparse(inp.url).hostname}")
         if not host_matches(inp.url, allowed):
             raise SkillFailed(f"域名不在抓取白名单: {urlparse(inp.url).hostname}")
         data = tools.fetch(inp.url)

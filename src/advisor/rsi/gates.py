@@ -9,8 +9,6 @@ from advisor.settings import load_yaml
 COST_FREE_RATIO = 0.10          # token 增幅在 10% 以内视为成本不变
 _DIGITS = re.compile(r"\d")
 _CONCLUSION = re.compile(r"买入|卖出|增持|减持|目标价|看多|看空|推荐|抄底|满仓|清仓|必涨|必跌")
-# 自媒体 / 用户生成内容平台：即使搜索引擎给了高权威分，也不能进抓取白名单
-_UGC_SITE = re.compile(r"weixin|toutiao|sohu|163\.com|baijiahao|zhihu|weibo|douyin|bilibili|xueqiu|guba|tieba|futunn|longbridge")
 MAX_SITES_PER_RUN = 1
 STEP = {"temperature": 0.5, "abstain_below": 0.10, "rerank_min": 0.5, "authority_b_min": 1}
 
@@ -69,8 +67,15 @@ def industry_hits(text: str, scope: str | None) -> list[str]:
     return out
 
 
+def _injection_problems(who: str, text: str) -> list[str]:
+    """模型生成的卡片/搜索侧重会进入生产提示词与判官提示词：疑似指令注入直接拒绝发布。"""
+    from advisor.evidence import sanitize as clean
+    _, suspicious = clean(text)
+    return [f"{who} 含疑似指令注入文本"] if suspicious else []
+
+
 def _text_problems(who: str, text: str, names: set[str], scope: str | None) -> list[str]:
-    bad = []
+    bad = _injection_problems(who, text)
     if _DIGITS.search(text):
         bad.append(f"{who} 含具体数字")
     if hit := [n for n in names if n and n in text]:
@@ -84,6 +89,7 @@ def _text_problems(who: str, text: str, names: set[str], scope: str | None) -> l
 
 def _site_problems(run: Run, ledger: Ledger) -> list[str]:
     from advisor.harness import Policy
+    from advisor.skills.data.web import is_ugc_host
     added = run.diff["sites"].get("add", [])
     bad = [] if len(added) <= MAX_SITES_PER_RUN else [f"一次加了 {len(added)} 个站点，上限 {MAX_SITES_PER_RUN} 个"]
     if run.diff["sites"].get("remove"):
@@ -92,7 +98,10 @@ def _site_problems(run: Run, ledger: Ledger) -> list[str]:
     for host in added:
         if any(host == b or host.endswith("." + b) for b in block):
             bad.append(f"{host} 在黑名单里")
-        elif _UGC_SITE.search(host):
+        elif any(b.endswith("." + host) for b in block):
+            # 父域放行 = 给黑名单子域（如 guba.eastmoney.com / tieba.baidu.com）开后门
+            bad.append(f"{host} 是黑名单站点 {next(b for b in block if b.endswith(chr(46) + host))} 的父域")
+        elif is_ugc_host(host):
             bad.append(f"{host} 是自媒体或用户生成内容平台")
     return bad
 
@@ -110,6 +119,7 @@ def overfit_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
                           detail="；".join(bad) if bad else "卡片不含具体股票、数字、未声明的行业专用词或投资结论，只描述方法")
     if "hint" in run.diff:
         bad = _text_problems("搜索侧重", run.diff["hint"]["new"], names, None)
+        bad += _injection_problems("搜索侧重", run.diff["hint"].get("rationale", ""))
         return GateResult(name="overfit", label="防过拟合", passed=not bad,
                           detail="；".join(bad) if bad else "搜索侧重不含具体公司、数字、行业专用词或投资结论")
     if "sites" in run.diff:
