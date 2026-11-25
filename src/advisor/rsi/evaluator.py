@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from advisor.harness import Budget
+from advisor.rsi.issues import USER_DOSSIER
 from advisor.rsi.ledger import Ledger
 from advisor.rsi.loader import recall, render_lessons
 from advisor.rsi.models import LessonCard, Run
@@ -92,17 +93,27 @@ def s1_items(repo, issues: list) -> list[dict]:
     """主张样本：被裁定成立的质询目标 / 核验存疑 = bad；同档案里已核验、未被推翻的主张 = good（按哈希稳定抽样）。"""
     bad_keys = {(i.source["dossier"], i.source["version"], i.source["claim_id"]) for i in issues}
     items: dict[str, dict] = {}
-    for d in repo.db.dossiers.find({"$or": [{"deliberation": {"$ne": None}}, {"claims.status": "disputed"}]},
+    for d in repo.db.dossiers.find({"$or": [{"deliberation": {"$ne": None}}, {"claims.status": "disputed"}], **USER_DOSSIER},
                                    projection={"_id": 0, "report_md": 0}):
         claims = list(d.get("claims", []))
         for t in (d.get("deliberation") or {}).get("team", []):
             claims += t.get("claims", [])
         ruled = {ch["target_claim_id"] for ch in (d.get("deliberation") or {}).get("challenges", [])}
+        # 召回文本与线上一致：研究问题 + 主张证据的指标名（线上 lesson_query 同口径）。
+        # 否则评测会在「主张原文」上召回线上永远不会注入的卡，把无效改进判成有效
+        ev_ids = list({i for c in claims for i in c.get("evidence_ids", [])})
+        names_of = {e["id"]: [m["name"] for m in e.get("metrics", []) if m.get("name")]
+                    for e in repo.db.evidence.find({"id": {"$in": ev_ids}}, projection={"id": 1, "metrics.name": 1})}
+
+        def recall_text(c: dict) -> str:
+            names = sorted({n for i in c.get("evidence_ids", []) for n in names_of.get(i, [])})
+            return (str(d.get("question") or "") + " " + " ".join(names)).strip()
+
         bad, good = [], []
         for c in claims:
             key = (d["key"], d["version"], c["id"])
             item = {"id": _h(*key)[:12], "ticker": d["ticker"], "as_of": d["as_of"], "dossier": f"{d['key']} v{d['version']}",
-                    "text": c["text"], "kind": c["kind"]}
+                    "text": c["text"], "kind": c["kind"], "recall_text": recall_text(c)}
             if key in bad_keys:
                 bad.append(item | {"label": "bad"})
             elif c.get("status") == "verified" and c["id"] not in ruled and c["kind"] in ("fact", "inference"):
@@ -124,7 +135,7 @@ def _judge(h, items: list[dict], cards: list[LessonCard]) -> tuple[dict[str, boo
     used: dict[str, LessonCard] = {}
     blocks = []
     for it in items:
-        hit = recall(cards, it["text"])
+        hit = recall(cards, it["recall_text"])      # 与线上召回输入一致（问题 + 指标名），不是主张原文
         used.update({c.id: c for c in hit})
         blocks.append(f"[{it['id']}] ({it['kind']}) {it['text']}" + (f"（相关方法提示：{'、'.join(c.id for c in hit)}）" if hit else ""))
     hints = render_lessons(sorted(used.values(), key=lambda c: c.id))
@@ -196,19 +207,27 @@ def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
     replay_q = set(frozen_replay(ledger, "S2", all_q))
     slices = {"evolution": evo_q, "replay": replay_q, "holdout": set(all_q) - evo_q}
 
+    def decide_row(r: dict, cfg: dict) -> str:
+        if r["source"] in ("model", "abstain"):
+            return route_from_probs(r["probs"], {**deps.policy.routing, **cfg}, r.get("stakes"), r.get("uncertainty"),
+                                    r.get("intent", "research")).route
+        return r["route"]
+
     def score(rows: list[dict], cfg: dict) -> tuple[float, float]:
         correct, deep_hit, deep_n = 0, 0, 0
         for r in rows:
-            if r["source"] in ("model", "abstain"):
-                route = route_from_probs(r["probs"], {**deps.policy.routing, **cfg}, r.get("stakes"), r.get("uncertainty"),
-                                         r.get("intent", "research")).route
-            else:
-                route = r["route"]
+            route = decide_row(r, cfg)
             correct += route == r["label"]
             if r["label"] == "deep":
                 deep_n += 1
                 deep_hit += route == "deep"
         return correct / max(len(rows), 1), deep_hit / max(deep_n, 1)
+
+    route_budget = {name: float(rp.budget.get("tokens", 0)) for name, rp in deps.policy.routes.items()}
+
+    def est_tokens(cfg: dict) -> int:
+        """路由参数改变「走哪条流程」：按回放后的 route 分布 × 各流程 token 预算估算成本。"""
+        return int(sum(route_budget.get(decide_row(r, cfg), 0) for rr in runs for r in rr.get("rows", [])))
 
     arms: dict[str, dict] = {}
     for arm, cfg in (("base", base), ("cand", cand)):
@@ -222,10 +241,11 @@ def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
                     per[name].append(acc)
                     if name == "replay":
                         recall_.append(dr)
-        arms[arm] = {"slices": {k: _stat(v) for k, v in per.items() if v}, "deep_recall": _stat(recall_), "tokens": 0, "params": cfg}
+        arms[arm] = {"slices": {k: _stat(v) for k, v in per.items() if v}, "deep_recall": _stat(recall_),
+                     "tokens": est_tokens(cfg), "params": cfg}
     log(f"S2 回放 {len(runs)} 次独立判别器运行")
     loaded_q = {r["question"] for rr in runs for r in rr.get("rows", [])} & replay_q
-    return {"scenario": "S2", "repeats": len(runs), "arms": arms, "primary": "replay",
+    return {"scenario": "S2", "repeats": len(runs), "arms": arms, "primary": "evolution",
             "metric": "路由准确率（每次判别器运行算一次重复）",
             "protocol": {"scorer": S2_SCORER, "replay_hash": _h(sorted(replay_q)), "hash": _h(S2_SCORER, sorted(replay_q), sorted(r["run_id"] for r in runs)),
                          "replay_loaded": len(loaded_q), "replay_frozen": len(replay_q),
@@ -288,6 +308,8 @@ def evaluate_s3(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
         res = {k: search_f(v, full(cfg), deps.policy) for k, v in slices.items() if v}
         arms[arm] = {"slices": {k: _stat([v["f"]] * REPEATS) for k, v in res.items()},
                      "detail": {k: {m: round(x, 4) for m, x in v.items()} for k, v in res.items()}, "tokens": 0,
+                     # 确定性回放没有 token 计费：以保留下来的线索量（进化集+留出集）作成本代理
+                     "cost_proxy": int(sum(v["kept"] for k, v in res.items() if k != "replay")),
                      "params": {"rerank_min": cfg["rerank_min"], "authority_b_min": cfg["authority_b_min"],
                                 "fetch_allow_add": cfg.get("fetch_allow_add", [])}}
     log(f"S3 回放 {sum(len(v) for k, v in slices.items() if k != 'replay')} 次缓存搜索")
@@ -303,7 +325,7 @@ def evaluate_s3(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
 def s3_hint_items(repo, expert: str, evo_dossiers: set[tuple[str, int]]) -> dict[str, list[dict]]:
     """进化集：坏案例所在档案里这位专家拿到的问题；留出集：其他股票的档案（每只股票取最新一份）。"""
     rows = []
-    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}},
+    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}, **USER_DOSSIER},
                                    projection={"_id": 0, "key": 1, "version": 1, "ticker": 1, "name": 1, "as_of": 1,
                                                "deliberation.team": 1}):
         t = next((t for t in (d.get("deliberation") or {}).get("team", []) if t["expert"] == expert and t.get("brief")), None)

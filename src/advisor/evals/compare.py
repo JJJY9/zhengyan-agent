@@ -41,17 +41,20 @@ def summarize(results: list[dict], baseline: str = "standard", candidate: str = 
     verdict = {"decision": "insufficient", "text": "样本不足，无法判断"}
     if baseline in agg and candidate in agg:
         failed = agg[baseline]["failed"] + agg[candidate]["failed"]
-        delta = agg[candidate]["score"] - agg[baseline]["score"]
-        ratio = agg[candidate]["tokens"] / max(agg[baseline]["tokens"], 1) if agg[candidate]["tokens"] is not None else None
-        verdict = {
-            "decision": "insufficient",
-            "quality_delta": round(delta, 3), "cost_ratio": round(ratio, 2) if ratio is not None else None,
-            "failed_cases": failed,
-            "criteria": {"non_inferior_margin": NON_INFERIOR_MARGIN, "max_cost_ratio": MAX_COST_RATIO},
-        }
-        if failed or agg[baseline]["cases"] != agg[candidate]["cases"]:
-            verdict["text"] = f"{failed} 个用例没有产出档案（失败或未完成），评测不完整，先排查后再比较"
+        b_score, c_score = agg[baseline]["score"], agg[candidate]["score"]
+        if failed or agg[baseline]["cases"] != agg[candidate]["cases"] or b_score is None or c_score is None:
+            # 某条 route 全部失败时 mean 为 None：先判不完整再算差值，不能拿 None 做减法
+            verdict = {"decision": "insufficient", "failed_cases": failed,
+                       "text": f"{failed} 个用例没有产出档案（失败或未完成），评测不完整，先排查后再比较"}
         else:
+            delta = c_score - b_score
+            ratio = agg[candidate]["tokens"] / max(agg[baseline]["tokens"], 1) if agg[candidate]["tokens"] is not None else None
+            verdict = {
+                "decision": "insufficient",
+                "quality_delta": round(delta, 3), "cost_ratio": round(ratio, 2) if ratio is not None else None,
+                "failed_cases": failed,
+                "criteria": {"non_inferior_margin": NON_INFERIOR_MARGIN, "max_cost_ratio": MAX_COST_RATIO},
+            }
             non_inferior, affordable = delta >= -NON_INFERIOR_MARGIN, ratio is not None and ratio <= MAX_COST_RATIO
             ok = non_inferior and affordable
             verdict.update({

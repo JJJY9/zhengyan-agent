@@ -37,12 +37,15 @@ class RSILLM(FakeLLM):
         return super().json(role, system, user, schema)
 
 
-def _claim(cid, text, status="verified", kind="inference"):
-    return {"id": cid, "text": text, "kind": kind, "evidence_ids": ["ev_x"], "status": status}
+def _claim(cid, text, status="verified", kind="inference", ev="ev_x"):
+    return {"id": cid, "text": text, "kind": kind, "evidence_ids": [ev], "status": status}
 
 
 def seed_dossiers(repo):
     now = datetime.now(timezone.utc)
+    # 证据文档带指标名：评测召回输入 = 研究问题 + 主张证据的指标名（与线上同口径）
+    repo.db.evidence.insert_one({"id": "ev_x", "source_type": "filing", "metrics": [{"name": "合同负债"}, {"name": "预收款"}]})
+    repo.db.evidence.insert_one({"id": "ev_y", "source_type": "filing", "metrics": [{"name": "营业收入"}, {"name": "毛利率"}]})
     base = {"question": "q", "route": "deep", "status": "partial", "summary": "", "unknowns": [], "dissents": [],
             "review_triggers": [], "evidence_ids": [], "quality": {"decision": "partial"}, "boundary_notes": [],
             "task_id": "t", "created_at": now, "clue_ids": []}
@@ -50,8 +53,8 @@ def seed_dossiers(repo):
         "key": "600001", "version": 1, "ticker": "600001", "name": "甲酒业", "as_of": "2026-10-16", "claims": [],
         "deliberation": {"team": [{"expert": "fundamental", "claims": [
             _claim("fundamental-c1", "合同负债同比大幅下降，说明终端需求走弱"),
-            _claim("fundamental-c2", "上半年营业收入累计同比微增", kind="fact"),
-            _claim("fundamental-c3", "毛利率保持稳定", kind="fact")]}],
+            _claim("fundamental-c2", "上半年营业收入累计同比微增", kind="fact", ev="ev_y"),
+            _claim("fundamental-c3", "毛利率保持稳定", kind="fact", ev="ev_y")]}],
             "challenges": [{"id": "ch1", "target_claim_id": "fundamental-c1", "target_expert": "fundamental",
                             "kind": "alternative_explanation", "text": "也可能是渠道打款政策调整", "evidence_ids": []}],
             "rulings": [{"challenge_id": "ch1", "verdict": "upheld", "reason": "无法排除替代解释", "severity": "mid"}]}})
@@ -59,7 +62,7 @@ def seed_dossiers(repo):
         "key": "000002", "version": 1, "ticker": "000002", "name": "乙食品", "as_of": "2026-10-18", "claims": [],
         "deliberation": {"team": [{"expert": "industry", "claims": [
             _claim("industry-c1", "预收款减少说明经销商信心不足"),
-            _claim("industry-c2", "行业集中度提升", kind="fact")]}],
+            _claim("industry-c2", "行业集中度提升", kind="fact", ev="ev_y")]}],
             "challenges": [{"id": "ch1", "target_claim_id": "industry-c1", "target_expert": "industry",
                             "kind": "logic_gap", "text": "未讨论收款政策变化", "evidence_ids": []}],
             "rulings": [{"challenge_id": "ch1", "verdict": "upheld", "reason": "推理跳步", "severity": "low"}]}})
