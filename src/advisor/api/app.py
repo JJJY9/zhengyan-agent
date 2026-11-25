@@ -5,6 +5,7 @@
 """
 import json
 import secrets
+import threading
 import time
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -81,30 +82,35 @@ class _SessionStore:
         self.max_sessions = max_sessions
         self._now = now
         self._expires: dict[str, float] = {}
+        self._lock = threading.Lock()          # 检查-淘汰必须原子：并发建会话时多个线程会选中同一个待淘汰 token
 
     def create(self) -> str:
-        self._prune()
-        token = secrets.token_urlsafe(32)
-        self._expires[token] = self._now() + self.ttl_s
-        if len(self._expires) > self.max_sessions:          # 超过上限先淘汰最早到期的会话
-            self._expires.pop(min(self._expires, key=self._expires.get), None)
-        return token
+        with self._lock:
+            self._prune()
+            token = secrets.token_urlsafe(32)
+            self._expires[token] = self._now() + self.ttl_s
+            if len(self._expires) > self.max_sessions:          # 超过上限先淘汰最早到期的会话
+                self._expires.pop(min(self._expires, key=self._expires.get), None)
+            return token
 
     def valid(self, token: str | None) -> bool:
-        if not token or token not in self._expires:
-            return False
-        if self._expires[token] <= self._now():
-            self._expires.pop(token, None)
-            return False
-        return True
+        with self._lock:
+            if not token or token not in self._expires:
+                return False
+            if self._expires[token] <= self._now():
+                self._expires.pop(token, None)
+                return False
+            return True
 
     def revoke(self, token: str | None) -> None:
         if token:
-            self._expires.pop(token, None)
+            with self._lock:
+                self._expires.pop(token, None)
 
     def __len__(self) -> int:
-        self._prune()
-        return len(self._expires)
+        with self._lock:
+            self._prune()
+            return len(self._expires)
 
     def _prune(self) -> None:
         now = self._now()

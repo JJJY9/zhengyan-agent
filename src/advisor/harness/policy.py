@@ -30,6 +30,12 @@ class Policy:
             for name, r in raw["routes"].items()
         }
         self.approvals = raw.get("approvals", {})
+        # 审批等级只允许 auto/confirm/deny：大小写或拼写偏差（Deny/Confirm/require）会被
+        # _admit 当作未知级别放行，审批门静默失效——启动即拒绝加载
+        levels = {"default": self.approvals.get("default", "deny"), **self.approvals.get("skills", {})}
+        bad = sorted(k for k, v in levels.items() if v not in ("auto", "confirm", "deny"))
+        if bad:
+            raise ValueError(f"审批等级配置无效（只允许 auto/confirm/deny）：{bad}")
         self.egress = raw.get("egress", {})
         self.search = raw.get("search", {})
         self.routing = raw.get("routing", {})
