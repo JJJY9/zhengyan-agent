@@ -112,34 +112,75 @@ class RSIRunner:
 
     def release(self, run_id: str, actor: str) -> Run:
         run = self._get(run_id, "approved")
-        active = self.ledger.active_version(run.kind)
-        if active != run.base_version:
-            raise TransitionError(f"{KIND_LABEL[run.kind]}在用版本已从 v{run.base_version} 变为 v{active}，候选需重新评测")
+        # 先用状态迁移占位：双击发布、发布与并发拒绝在这一点上串行化；失败方不留任何副作用
+        run = self._move(run, "released", "release.begin", actor,
+                         f"发布{KIND_LABEL[run.kind]}：校验在用版本后激活新版本")
+        asset = None
+        activated = False
         try:
-            asset = self.ledger.append_asset(run.kind, run.content, run.change_reason, actor, run.base_version, run.run_id)
-        except LedgerError as e:
-            raise TransitionError(str(e)) from e
-        for prev in self.ledger.list_runs():
-            if prev.kind == run.kind and prev.status == "released":
-                self._move(prev, "archived", "archive", "system", f"被 {run.run_id} 发布的 v{asset.version} 取代")
-        run.released_version = asset.version
-        self.ledger.set_issue_status(run.issue_ids, "addressed")
-        self.loader.invalidate()
-        return self._move(run, "released", "release", actor,
-                          f"发布{KIND_LABEL[run.kind]} v{asset.version}（parent v{run.base_version}，sha256 {asset.sha256[:10]}）",
-                          active_version=asset.version)
+            active = self.ledger.active_version(run.kind)
+            if active != run.base_version:
+                raise TransitionError(f"{KIND_LABEL[run.kind]}在用版本已从 v{run.base_version} 变为 v{active}，候选需重新评测")
+            try:
+                asset = self.ledger.append_asset(run.kind, run.content, run.change_reason, actor, run.base_version, run.run_id)
+            except LedgerError as e:
+                raise TransitionError(str(e)) from e
+            # 激活 = 对在用版本指针的 CAS：并发发布同一 base 只有一个成功，回滚并发也会被拦下
+            if not self.ledger.activate(run.kind, run.base_version, asset.version):
+                raise TransitionError(f"{KIND_LABEL[run.kind]}在用版本已被并发修改，候选需重新评测")
+            activated = True
+            for prev in self.ledger.runs_of(run.kind, "released"):
+                if prev.run_id != run.run_id:
+                    self._move(prev, "archived", "archive", "system", f"被 {run.run_id} 发布的 v{asset.version} 取代")
+            self.ledger.set_issue_status(run.issue_ids, "addressed")
+            self.loader.invalidate()
+            run.released_version = asset.version
+            self.ledger.save_run(run, expect_status="released")
+            self.ledger.event("release", actor, run_id=run.run_id, kind=run.kind, scenario=run.scenario,
+                              from_status="released", to_status="released",
+                              detail=f"发布{KIND_LABEL[run.kind]} v{asset.version}（parent v{run.base_version}，sha256 {asset.sha256[:10]}）",
+                              active_version=asset.version)
+            return run
+        except Exception:
+            # 失败补偿：从未激活的资产删除、占位退回 approved，保证失败方不留副作用
+            try:
+                if asset is not None and not activated:
+                    self.ledger.delete_asset(run.kind, asset.version)
+                if not activated:
+                    run.status = "approved"
+                    run.released_version = None
+                    self.ledger.save_run(run, expect_status="released")
+            except Exception:      # noqa: BLE001  补偿尽力而为，不掩盖原始异常
+                pass
+            raise
 
     def rollback(self, kind: str, actor: str, reason: str) -> dict:
         current = self.ledger.active_asset(kind)
-        if not current or current.parent_version is None:
+        if not current:
+            raise TransitionError(f"{KIND_LABEL.get(kind, kind)} 没有在用版本")
+        if current.parent_version is None:
+            # 幂等自愈：上次回滚可能在标记运行记录前中断——把不在用的已发布运行对齐为已回滚
+            self._reconcile_rollback(kind, current.version, actor)
             raise TransitionError(f"{KIND_LABEL[kind]}已是基线版本，无法回滚")
         if len(reason.strip()) < 10:
             raise TransitionError("回滚理由不少于 10 个字")
+        # 先用 CAS 把在用版本退回 parent：与并发 release 互斥，失败方不改任何其它文档
+        if not self.ledger.activate(kind, current.version, current.parent_version):
+            raise TransitionError(f"{KIND_LABEL[kind]}在用版本已被并发修改，请刷新后重试")
         self.ledger.event("rollback", actor, kind=kind, active_version=current.parent_version,
                           detail=f"{KIND_LABEL[kind]} v{current.version} → v{current.parent_version}：{reason}")
-        if current.run_id and (run := self.ledger.get_run(current.run_id)):
-            run.reject_reason = f"发布后回滚：{reason}"
-            self._move(run, "rolled_back", "rolled_back", actor, f"已回滚：{reason}")
-            self.ledger.set_issue_status(run.issue_ids, "open")
+        self._reconcile_rollback(kind, current.parent_version, actor, reason)
         self.loader.invalidate()
         return {"kind": kind, "from": current.version, "to": current.parent_version}
+
+    def _reconcile_rollback(self, kind: str, active_version: int, actor: str, reason: str = "") -> None:
+        """账本对齐：指针已不在用的已发布运行标记回滚、坏案例重开；可安全重试（幂等）。"""
+        for run in self.ledger.runs_of(kind, "released"):
+            if run.released_version == active_version:
+                continue
+            run.reject_reason = f"发布后回滚：{reason}" if reason else (run.reject_reason or "发布后回滚（账本对齐）")
+            try:
+                self._move(run, "rolled_back", "rolled_back", actor, run.reject_reason)
+                self.ledger.set_issue_status(run.issue_ids, "open")
+            except TransitionError:      # 并发下运行状态已变化：下次重试再对齐
+                continue
