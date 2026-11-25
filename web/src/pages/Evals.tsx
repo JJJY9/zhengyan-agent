@@ -139,7 +139,7 @@ function CompareView({ run }: { run: EvalRun }) {
             <thead><tr><th>指标</th>{routes.map((r) => <th key={r} className="num">{ROUTE_LABEL[r]}</th>)}</tr></thead>
             <tbody>
               {METRIC_ROWS.map(([k, label, f]) => (
-                <tr key={k}><td>{label}</td>{routes.map((r) => <td key={r} className="num">{s.routes[r] ? f(s.routes[r][k]) : "—"}</td>)}</tr>
+                <tr key={k}><td>{label}</td>{routes.map((r) => <td key={r} className="num">{s.routes[r] && s.routes[r][k] != null ? f(s.routes[r][k] as number) : "—"}</td>)}</tr>
               ))}
             </tbody>
           </table>

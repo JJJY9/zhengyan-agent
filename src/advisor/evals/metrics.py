@@ -23,9 +23,10 @@ def _secs(task: dict) -> float:
 
 
 def dossier_metrics(d: Dossier, ev: dict[str, EvidenceCard], task: dict) -> dict:
-    claims = d.claims
+    # 核验率只统计真正需要证据核验的事实/推断；假设与情景由验真器无条件放行，计入会奖励「多写假设」
+    claims = [c for c in d.claims if c.kind in ("fact", "inference")]
     verified = [c for c in claims if c.status == "verified"]
-    numeric = [c for c in claims if extract_numbers(c.text) and c.kind in ("fact", "inference")]
+    numeric = [c for c in claims if extract_numbers(c.text)]
     numeric_ok = [c for c in numeric if c.status == "verified"]
     text = " ".join(c.text for c in verified) + " " + d.summary
     coverage = {k: f(d, text) for k, f in COVERAGE.items()}
@@ -33,14 +34,16 @@ def dossier_metrics(d: Dossier, ev: dict[str, EvidenceCard], task: dict) -> dict
     b_publishers = {(ev[i].origin_publisher or ev[i].site_name) for i in cited if i in ev and ev[i].level == "B"}
     budget = ((task.get("result") or {}).get("budget") or {}).get("used", {})
     verified_rate = len(verified) / len(claims) if claims else 0.0
-    numeric_acc = len(numeric_ok) / len(numeric) if numeric else 1.0
+    numeric_acc = len(numeric_ok) / len(numeric) if numeric else None      # 没有数字主张：N/A，不白送满分
     cov = sum(coverage.values()) / len(coverage)
-    score = (0.30 * verified_rate + 0.30 * cov + 0.25 * numeric_acc + 0.05 * min(len(d.dissents), 3) / 3
-             + 0.10 * (1.0 if d.quality.decision == "pass" else 0.5))
+    base = (0.30 * verified_rate + 0.30 * cov + 0.05 * min(len(d.dissents), 3) / 3
+            + 0.10 * (1.0 if d.quality.decision == "pass" else 0.5))
+    score = base + 0.25 * numeric_acc if numeric_acc is not None else base / 0.75
     return {
         "claims": len(claims), "verified": len(verified), "disputed": sum(c.status == "disputed" for c in claims),
         "rejected": sum(c.status == "rejected" for c in claims), "verified_rate": round(verified_rate, 3),
-        "numeric_claims": len(numeric), "numeric_accuracy": round(numeric_acc, 3),
+        "numeric_claims": len(numeric), "numeric_accuracy": round(numeric_acc, 3) if numeric_acc is not None else None,
+        "assumptions": sum(c.kind in ("assumption", "scenario") for c in d.claims),
         "coverage": coverage, "coverage_rate": round(cov, 3), "dissents": len(d.dissents), "unknowns": len(d.unknowns),
         "independent_b_sources": len(b_publishers), "quality_decision": d.quality.decision,
         "tokens": int(budget.get("tokens", 0)), "search_calls": int(budget.get("search_calls", 0)),

@@ -33,10 +33,26 @@ def _ratio(hit: int, total: int) -> float | None:
     return round(hit / total, 3) if total else None
 
 
-def _match(text: str, candidates: list[str]) -> int | None:
-    scores = [(related(text, c), i) for i, c in enumerate(candidates)]
-    best = max(scores, default=(0.0, None))
-    return best[1] if best[0] >= MATCH_MIN else None
+def _assign(claims: list[dict], texts: list[str]) -> dict[int, int]:
+    """一对一匹配：按相似度从高到低贪心，每条复核记录/新结论最多对应一条旧结论。
+
+    逐条独立取最高相似度会让一条泛化复核同时算作多条受影响结论的「交代」。
+    """
+    pairs = []
+    for i, c in enumerate(claims):
+        for j, t in enumerate(texts):
+            sim = related(c["text"], t)
+            if sim >= MATCH_MIN:
+                pairs.append((sim, i, j))
+    pairs.sort(reverse=True)
+    out: dict[int, int] = {}
+    used: set[int] = set()
+    for _, i, j in pairs:
+        if i in out or j in used:
+            continue
+        out[i] = j
+        used.add(j)
+    return out
 
 
 def load_labels(path=LABELS) -> dict:
@@ -48,14 +64,17 @@ def score_case(alert: dict, old: dict, new: dict, evidence: dict[str, dict], lab
     reviews = new.get("prior_review") or []
     review_texts = [r["prior_claim"] for r in reviews]
     affected_ids = {a["claim_id"] for a in alert.get("affected", [])}
+    old_claims = old.get("claims", [])
+    review_of = _assign(old_claims, review_texts)
+    kept_of = _assign(old_claims, [x["text"] for x in new.get("claims", [])])
     rows = []
-    for c in old.get("claims", []):
-        k = _match(c["text"], review_texts)
+    for i, c in enumerate(old_claims):
+        k = review_of.get(i)
         r = reviews[k] if k is not None else None
         rows.append({"id": c["id"], "text": c["text"], "affected": c["id"] in affected_ids,
                      "verdict": r["verdict"] if r else None, "reason": r["reason"] if r else "",
                      "evidence_ids": r.get("evidence_ids", []) if r else [],
-                     "kept": _match(c["text"], [x["text"] for x in new.get("claims", [])]) is not None})
+                     "kept": i in kept_of})
     affected = [r for r in rows if r["affected"]]
     covered = [r for r in affected if r["verdict"]]
     changed = [r for r in covered if r["verdict"] in ("weakened", "invalidated")]

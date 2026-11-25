@@ -59,6 +59,14 @@ export default function DiffView({ diff }: { diff: DossierDiff }) {
         <div className="card"><h3>新增结论 {diff.claims.added.length}</h3><ul className="small">{diff.claims.added.map((c, i) => <li key={i}>{c}</li>)}</ul></div>
         <div className="card"><h3>不再出现 {diff.claims.removed.length}</h3><ul className="small">{diff.claims.removed.map((c, i) => <li key={i}>{c}</li>)}</ul></div>
       </div>
+      {diff.claims.status_changed.length > 0 && (
+        <div className="card">
+          <h3>核验状态变化 {diff.claims.status_changed.length}</h3>
+          <ul className="small">{diff.claims.status_changed.map((c, i) => (
+            <li key={i}>{c.text} <span className="muted">— {c.old_status} → {c.new_status}</span></li>
+          ))}</ul>
+        </div>
+      )}
     </div>
   );
 }
