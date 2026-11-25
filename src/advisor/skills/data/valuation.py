@@ -16,7 +16,7 @@ from advisor.skills.data.structured import CardsOut, _latest_per_period, to_deci
 
 
 class ValuationIn(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(pattern=r"^[0-9]{6}$")
     as_of: date
     window_days: int = Field(default=730, ge=180, le=1500)
 

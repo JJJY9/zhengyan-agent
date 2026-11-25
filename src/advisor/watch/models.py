@@ -9,7 +9,7 @@ AlertStatus = Literal["open", "reviewing", "resolved", "dismissed"]
 
 
 class Subscription(BaseModel):
-    ticker: str = Field(pattern=r"^\d{6}$")
+    ticker: str = Field(pattern=r"^[0-9]{6}$")
     name: str = ""
     price_move_pct: float = Field(default=10, gt=0, le=100)     # 相对档案时点的涨跌幅提醒阈值
     active: bool = True
