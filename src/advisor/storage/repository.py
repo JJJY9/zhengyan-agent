@@ -143,6 +143,25 @@ class Repository:
         )
         return doc is not None
 
+    # ---------- 任务级运行时账本（与图状态解耦：节点被审批中断/重放也不丢账） ----------
+    def task_charge(self, task_id: str, kind: str, amount: float) -> None:
+        """每次真实消耗原子累加；任务文档不存在的调用方（paper/watch 等虚拟任务）是无害空操作。"""
+        if amount:
+            self.db.tasks.update_one({"task_id": task_id}, {"$inc": {f"runtime_budget.{kind}": amount}})
+
+    def task_runtime_budget(self, task_id: str) -> dict:
+        doc = self.db.tasks.find_one({"task_id": task_id}, projection={"runtime_budget": 1})
+        return dict((doc or {}).get("runtime_budget") or {})
+
+    def add_paused_time(self, task_id: str, pause_s: float) -> None:
+        """审批/停机等待累计：预算检查按开始时间减暂停时长计算已用执行时间。"""
+        if pause_s > 0:
+            self.db.tasks.update_one({"task_id": task_id}, {"$inc": {"paused_s": pause_s}})
+
+    def task_paused_s(self, task_id: str) -> float:
+        doc = self.db.tasks.find_one({"task_id": task_id}, projection={"paused_s": 1})
+        return float((doc or {}).get("paused_s") or 0.0)
+
     def push_event(self, task_id: str, node: str, message: str) -> None:
         self.db.tasks.update_one(
             {"task_id": task_id},

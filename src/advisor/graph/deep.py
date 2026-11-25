@@ -72,7 +72,7 @@ class DeepNodes(Nodes):
             sends.append(Send("expert_round", {
                 "task_id": state["task_id"], "route": state["route"], "as_of": state["as_of"], "ticker": state["ticker"],
                 "company": state.get("company_name", ""), "question": state["question"], "expert": key, "questions": qs,
-                "shared": shared, "allocation": alloc, "started_at": budget.started_at,
+                "shared": shared, "allocation": alloc, "started_at": budget.started_at, "paused_s": budget.paused_s,
             }))
         return sends
 

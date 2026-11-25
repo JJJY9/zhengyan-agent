@@ -78,6 +78,11 @@ class Nodes:
     # ---------- 工具 ----------
     def _h(self, state: ResearchState, node: str):
         budget = Budget.from_dict(state["budget"])
+        # 任务级账本：节点被审批中断时不会返回它算出的预算，计费只落在这里才不会丢；
+        # 重启/重放后按账本恢复已用，route 上限仍被真实消耗守住。
+        for k, v in self.d.repo.task_runtime_budget(state["task_id"]).items():
+            budget.used[k] = max(float(budget.used.get(k, 0.0)), float(v))
+        budget.paused_s = self.d.repo.task_paused_s(state["task_id"])   # 审批等待不算执行时限
         route = state.get("route") or "quick"
         return self.d.harness(state["task_id"], route, date.fromisoformat(state["as_of"]), budget, node=node,
                               task_scoped_cache=True), budget
@@ -178,7 +183,7 @@ class Nodes:
         decision = decide_route(h, state["question"], state.get("intent", "research"),
                                 state.get("route_requested", "auto"), cfg)
         rp = self.d.policy.route(decision.route)
-        budget = Budget(limits=rp.budget, used=budget.used, started_at=budget.started_at)
+        budget = Budget(limits=rp.budget, used=budget.used, started_at=budget.started_at, paused_s=budget.paused_s)
         self.d.repo.save_working(state["task_id"], "routing", "decision", decision.model_dump(mode="json"))
         how = ROUTE_SOURCE_LABEL.get(decision.source, "")
         self._event(state, "route", f"采用「{ROUTE_LABEL[decision.route]}」{'（' + how + '）' if how else ''}，"

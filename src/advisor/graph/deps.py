@@ -63,6 +63,7 @@ class Deps:
             llm=self.llm, decision=self.decision,
             cache=self.task_cache(task_id) if task_scoped_cache else None,
             flight=self.task_flight(task_id) if task_scoped_cache else None,
+            charge_sink=lambda kind, amount: self.repo.task_charge(task_id, kind, amount),
         )
 
 
