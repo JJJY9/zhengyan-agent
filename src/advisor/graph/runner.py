@@ -12,6 +12,7 @@ from advisor.contracts import ResearchRequest
 from advisor.graph.builder import build_graph
 from advisor.graph.deps import Deps
 from advisor.harness import TaskCancelled
+from advisor.harness.egress import EgressGuard
 from advisor.tracing import span
 
 
@@ -29,6 +30,9 @@ class ResearchService:
         self.max_pending = self.MAX_PENDING if max_pending is None else max_pending
         self._gate = threading.Lock()
         self._pending = 0
+        self.guard = EgressGuard(
+            deps.policy.egress.get("sensitive_patterns", []), deps.policy.egress.get("trade_intent_patterns", [])
+        )
 
     def _acquire_or_raise(self) -> None:
         with self._gate:
@@ -54,7 +58,10 @@ class ResearchService:
         self._acquire_or_raise()
         try:
             task_id = "t_" + uuid.uuid4().hex[:10]
-            self.deps.repo.create_task(task_id, req.model_dump(mode="json") | ({"namespace": namespace} if namespace else {}))
+            # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
+            request_doc = req.model_dump(mode="json")
+            request_doc["question"] = self.guard.redact(req.question)
+            self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}))
             payload = {
                 "task_id": task_id, "question": req.question, "ticker": req.ticker, "namespace": namespace or "",
                 "as_of": (req.as_of or date.today()).isoformat(), "route_requested": req.route,

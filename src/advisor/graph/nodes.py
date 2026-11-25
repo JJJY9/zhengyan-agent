@@ -396,7 +396,7 @@ class Nodes:
         status = "committed" if quality.decision == "pass" and not boundary else "partial"
         dossier = Dossier(
             key=key, version=0, parent_version=parent, ticker=state["ticker"],
-            name=state.get("company_name", ""), as_of=as_of, question=state["question"],
+            name=state.get("company_name", ""), as_of=as_of, question=self.guard.redact(state["question"]),
             route=state["route"], status=status, summary=draft.get("summary", ""), claims=claims,
             unknowns=list(dict.fromkeys(draft.get("unknowns", []) + state.get("unknowns_sys", []))),
             dissents=draft.get("dissents", []), review_triggers=draft.get("review_triggers", []),
