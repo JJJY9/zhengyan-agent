@@ -40,18 +40,41 @@ class DeepNodes(Nodes):
         budget = Budget.from_dict(state["budget"])
         members = [(m.expert, m.questions) for m in plan.members] + [("red_team", ["寻找主要结论的反例、替代解释与风险"])]
         n = len(members)
-        alloc = {
-            "tokens": max(budget.remaining("tokens") * 0.55 / n, 1),          # 留 45% 给质询与主席
-            "search_calls": min(int(cfg.get("search_per_expert", 2)), int(budget.remaining("search_calls") // n)),
-            "fetch_calls": min(int(cfg.get("fetch_per_expert", 2)), int(budget.remaining("fetch_calls") // n)),
-            "wall_clock_s": budget.limits.get("wall_clock_s", 1800),
-        }
+        search_cap = int(cfg.get("search_per_expert", 2))
+        fetch_cap = int(cfg.get("fetch_per_expert", 2))
+        searchable = [i for i, (key, _) in enumerate(members) if EXPERTS[key].searches]
+
+        def _spread(total: int, cap: int) -> list[int]:
+            """分给可检索专家：每人不超过单轮上限，余数给前几位。
+
+            此前按 remaining // n 均分，剩余调用少于专家数时人人分到 0，检索整段被跳过、预算闲置。
+            """
+            out = [0] * n
+            if not searchable:
+                return out
+            share = min(int(total), cap * len(searchable))
+            base, extra = divmod(share, len(searchable))
+            for pos, i in enumerate(searchable):
+                out[i] = min(cap, base + (1 if pos < extra else 0))
+            return out
+
+        searches = _spread(int(budget.remaining("search_calls")), search_cap)
+        fetches = _spread(int(budget.remaining("fetch_calls")), fetch_cap)
         shared = {i: c for i, c in state.get("evidence", {}).items() if c["source_type"] != "web"}
-        return [Send("expert_round", {
-            "task_id": state["task_id"], "route": state["route"], "as_of": state["as_of"], "ticker": state["ticker"],
-            "company": state.get("company_name", ""), "question": state["question"], "expert": key, "questions": qs,
-            "shared": shared, "allocation": alloc, "started_at": budget.started_at,
-        }) for key, qs in members]
+        sends = []
+        for i, (key, qs) in enumerate(members):
+            alloc = {
+                "tokens": max(budget.remaining("tokens") * 0.55 / n, 1),          # 留 45% 给质询与主席
+                "search_calls": searches[i],
+                "fetch_calls": fetches[i],
+                "wall_clock_s": budget.limits.get("wall_clock_s", 1800),
+            }
+            sends.append(Send("expert_round", {
+                "task_id": state["task_id"], "route": state["route"], "as_of": state["as_of"], "ticker": state["ticker"],
+                "company": state.get("company_name", ""), "question": state["question"], "expert": key, "questions": qs,
+                "shared": shared, "allocation": alloc, "started_at": budget.started_at,
+            }))
+        return sends
 
     def expert_round(self, payload: dict) -> dict:
         self.d.repo.push_event(payload["task_id"], f"expert:{payload['expert']}", f"{EXPERTS[payload['expert']].name} 开始独立取证")
@@ -108,11 +131,16 @@ class DeepNodes(Nodes):
         results = [ExpertResult.model_validate(r) for r in state.get("expert_results", [])]
         board = [c for r in results for c in r.claims if c.status == "verified"]
         evidence = {c.id: c for c in _cards(state)}
-        responses = agent.respond(h, self.d, challenges, board, evidence, date.fromisoformat(state["as_of"]))
+        responses, failed = agent.respond(h, self.d, challenges, board, evidence, date.fromisoformat(state["as_of"]))
         self.d.repo.save_working(state["task_id"], "responses", "round1", [r.model_dump(mode="json") for r in responses])
         tally = {s: sum(r.stance == s for r in responses) for s in ("concede", "rebut", "revise")}
         self._event(state, "rebuttal", f"专家回应质疑：接受 {tally['concede']} 条，反驳 {tally['rebut']} 条，修改结论 {tally['revise']} 条")
-        return {"responses": [r.model_dump(mode="json") for r in responses], "budget": budget.to_dict()}
+        upd = {"responses": [r.model_dump(mode="json") for r in responses], "budget": budget.to_dict()}
+        if failed:      # 有专家没答辩：不能像都回应了一样放行，质量门降级
+            msg = "专家回应失败：" + "；".join(failed)
+            self._event(state, "rebuttal", msg + "（相关质询按未决处理）")
+            upd["challenge_error"] = msg
+        return upd
 
     # ---------- 4. 主席综合 ----------
     def chair(self, state: ResearchState) -> dict:
@@ -136,11 +164,15 @@ class DeepNodes(Nodes):
         final = [pool[i] for i in adopted] + synth
         # 被质询成立/承认的主张保留在“未通过核验”，让分歧可见
         blocked_ids = {ch.target_claim_id for ch in challenges} - set(adopted)
+        rulings_by_ch = {r.challenge_id: r for r in rulings}
         for cid in blocked_ids:
-            ruling = next((r for r in rulings for ch in challenges if ch.id == r.challenge_id and ch.target_claim_id == cid), None)
-            if ruling and ruling.verdict == "upheld" and cid in pool:
+            # 同一主张可能被多条质询：任一条裁定成立都要保留为 disputed（不能只看第一条裁定）
+            hits = [rulings_by_ch[ch.id] for ch in challenges
+                    if ch.target_claim_id == cid and ch.id in rulings_by_ch]
+            upheld = next((r for r in hits if r.verdict == "upheld"), None)
+            if upheld and cid in pool:
                 final.append(pool[cid].model_copy(update={"status": "disputed",
-                                                          "verify_notes": pool[cid].verify_notes + [f"反证官质询成立：{ruling.reason}"]}))
+                                                          "verify_notes": pool[cid].verify_notes + [f"反证官质询成立：{upheld.reason}"]}))
         dissents = list(out.dissents) + [
             Dissent(text=f"［未决质询 {ch.id}］{ch.text}", evidence_ids=ch.evidence_ids)
             for ch in challenges for r in rulings if r.challenge_id == ch.id and r.verdict == "unresolved"
