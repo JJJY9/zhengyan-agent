@@ -83,7 +83,8 @@ SMALL_QUESTIONS: dict[str, tuple[str, dict[str, str]]] = {
 
 
 def _top(probs: dict[str, float]) -> str:
-    return max(probs, key=probs.get)
+    clean = {k: _finite(v) for k, v in probs.items()}
+    return max(clean, key=clean.get)
 
 
 def _small_probs(h, question: str) -> tuple[dict[str, float], str, str]:

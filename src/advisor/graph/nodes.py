@@ -1,4 +1,5 @@
 """主图节点（共用 + 单 Agent 标准研究）。模型提议，Harness 许可，核验器检查，提交器在复验授权后写入档案。"""
+import math
 import re
 from datetime import date, datetime, timezone
 
@@ -145,9 +146,12 @@ class Nodes:
         if not code:
             return None
         probs = h.decide(q, INTENT_QUESTIONS, purpose="intake_small")["intent"]
+        finite = {k: float(v) for k, v in probs.items()
+                  if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0}
         words = [w for w in self.d.policy.intake.get("focus_keywords", []) if w in q]
         words = [w for w in words if not any(w != o and w in o for o in words)]   # 去掉被更长词包含的
-        return IntakeOut(company_name=known.get(code) or None, ticker=code, intent=max(probs, key=probs.get),
+        return IntakeOut(company_name=known.get(code) or None, ticker=code,
+                         intent=max(finite, key=finite.get) if finite else "research",
                          focus="、".join(words)[:20])
 
     def authorize(self, state: ResearchState) -> dict:

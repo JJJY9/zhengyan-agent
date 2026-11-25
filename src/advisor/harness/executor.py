@@ -22,6 +22,8 @@ from advisor.harness.policy import Policy
 from advisor.tracing import span
 
 MAX_RETRIES = 2
+MIN_LLM_TOKENS = 32          # 剩余预算不够产出最小合法 JSON 时不再发起必败的模型调用
+LLM_TIMEOUT_CAP_S = 300.0
 
 
 class _SkillTimeout(Exception):
@@ -227,24 +229,40 @@ class Harness:
 
     # ---------- 模型调用 ----------
     def llm(self, role: str, system: str, user: str, schema: type[BaseModel], purpose: str) -> BaseModel:
-        """模型调用同样受撤销、预算、脱敏与审计约束。"""
+        """模型调用同样受撤销、预算、脱敏、超时与审计约束。"""
         started = time.time()
         record = {**self._base_record("llm", purpose), "role": role}
+        timeout_s, wall_left = LLM_TIMEOUT_CAP_S, self.budget.remaining("wall_clock_s")
         with span(f"llm:{purpose}", task_id=self.ctx.task_id, node=self.ctx.node, role=role) as ids:
             record.update(ids)
             try:
                 self.check_cancelled()
                 self.budget.check("tokens", 1)
-                # 单次调用按剩余额度封顶：专家预算只够 123 tokens 时，模型不可能一次写出几十万 token，
-                # 否则一个超长调用就会吃掉留给质询/主席的预留预算（任务在付了全部专家成本后失败）
-                cap = max(1, int(min(self.budget.remaining("tokens"), 8192)))
-                obj, usage = self.llm_client.json(
-                    role=role, system=system, user=self.egress.redact(user), schema=schema, max_tokens=cap
+                remaining = self.budget.remaining("tokens")
+                if remaining < MIN_LLM_TOKENS:      # 不够产出最小合法 JSON：直接失败，不发必败请求
+                    raise BudgetExceeded(f"token 预算不足（剩余 {remaining:.0f}，至少需要 {MIN_LLM_TOKENS}）")
+                cap = int(min(remaining, 8192))
+                if "wall_clock_s" in self.budget.limits:      # 模型调用同样受总时限约束
+                    timeout_s = max(1.0, min(LLM_TIMEOUT_CAP_S, wall_left))
+                obj, usage = _call_with_timeout(
+                    lambda: self.llm_client.json(role=role, system=system, user=self.egress.redact(user),
+                                                 schema=schema, max_tokens=cap),
+                    timeout_s,
                 )
                 self.budget.charge("tokens", usage)
-                record.update(status="ok", tokens=usage)
+                record.update(tokens=usage)
+                self.budget.check()                 # 调用返回后复查总时限：超时产生的结论不再提交
+                record.update(status="ok")
                 return obj
+            except _SkillTimeout as e:
+                record.update(status="BudgetExceeded", error=f"模型调用超时（{timeout_s:.0f}s）")
+                raise BudgetExceeded(f"模型调用超时（{timeout_s:.0f}s，总时限剩余 {wall_left:.0f}s）") from e
             except Exception as e:
+                # 模型侧可能已经花掉 token（修复重试失败/API 中断）：按真实消耗计费并写审计
+                spent = int(getattr(e, "tokens", 0) or getattr(e, "advisor_tokens", 0) or 0)
+                if spent:
+                    self.budget.charge("tokens", spent)
+                    record["tokens"] = spent
                 record.update(status=type(e).__name__, error=str(e)[:300])
                 raise
             finally:
@@ -252,7 +270,7 @@ class Harness:
                 self.audit(record)
 
     def decide(self, state: str, questions: dict[str, tuple[str, dict[str, str]]], purpose: str) -> dict[str, dict[str, float]]:
-        """决策小模型调用：同样受撤销、脱敏与审计约束；本地模型不计 token 预算。"""
+        """决策小模型调用：同样受撤销、脱敏与审计约束；本地模型不计 token 预算，但总时限仍生效。"""
         if self.decision_client is None:
             raise RuntimeError("未配置决策小模型")
         started = time.time()
@@ -261,6 +279,7 @@ class Harness:
             record.update(ids)
             try:
                 self.check_cancelled()
+                self.budget.check()                 # 已超总时限的任务不再发起外部请求
                 answers, meta = self.decision_client.choose(self.egress.redact(state), questions)
                 record.update(status="ok", tokens=0, model=meta.get("model"))
                 return answers
