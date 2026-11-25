@@ -10,6 +10,8 @@ import re
 import time
 from datetime import date
 
+from langgraph.errors import GraphInterrupt
+
 from advisor.contracts import Claim, EvidenceCard
 from advisor.contracts.deliberation import Challenge, ExpertResult, Response, Ruling
 from advisor.evidence.verifier import verify_claims
@@ -93,13 +95,15 @@ def plan_team(h, deps, question: str, company: str, stakes: str | None, evidence
         if m.expert in SELECTABLE and m.expert not in seen:
             seen.add(m.expert)
             members.append(m.model_copy(update={"questions": [q[:80] for q in m.questions[:3]]}))
-    if "fundamental" not in seen:  # 基本面是事实底座
-        from advisor.experts.schemas import TeamMember
-        members.insert(0, TeamMember(expert="fundamental", questions=["最新业绩、口径与利润质量"], why="事实底座"))
     mode = plan.mode
     if stakes == "high" and mode == "map_reduce":
         mode = "debate"
-    return TeamPlan(members=members[: int(cfg.get("max_team", 5))], mode=mode, rationale=plan.rationale)
+    limit = int(cfg.get("max_team", 5))
+    members = members[:limit]
+    if "fundamental" not in {m.expert for m in members}:   # 基本面是事实底座：截断后也要保留
+        from advisor.experts.schemas import TeamMember
+        members = [TeamMember(expert="fundamental", questions=["最新业绩、口径与利润质量"], why="事实底座")] + members[: limit - 1]
+    return TeamPlan(members=members, mode=mode, rationale=plan.rationale)
 
 
 # ---------- 2. 独立首轮（并行，每个专家一个 Send） ----------
@@ -137,12 +141,20 @@ def run_expert(deps, p: dict) -> dict:
     result = ExpertResult(expert=spec.key, name=spec.name, model_role=role, brief=p["questions"])
     shared = [EvidenceCard.model_validate(c) for c in p["shared"].values()]
     own: list[EvidenceCard] = []
+    sys_unknowns: list[str] = []
     try:
         if spec.searches and int(budget.limits.get("search_calls", 0)) > 0:
             hint = deps.rsi.expert_hint(spec.key, spec.query_hint) if deps.rsi else spec.query_hint
             queries = expert_queries(h, spec, hint, p["company"], p["ticker"], p["questions"])[: int(budget.limits["search_calls"])]
-            gathered = gather_web(h, deps, queries, as_of, p["route"], max_fetch=int(budget.limits.get("fetch_calls", 0)))
+            log_notes: list[str] = []
+            gathered = gather_web(h, deps, queries, as_of, p["route"],
+                                  max_fetch=int(budget.limits.get("fetch_calls", 0)), log=log_notes.append)
             own, result.queries = gathered.cards, gathered.searched
+            # 搜索失败/抓取失败要进入系统缺口，随档案可见；否则深研在检索全挂时仍可能 pass
+            sys_unknowns = list(gathered.unknowns)
+            for m in log_notes:
+                if m not in sys_unknowns:
+                    sys_unknowns.append(m)
         view = scope_cards(spec, shared) + [c for c in own if c.level in ("A", "B")] + [c for c in own if c.level == "C"][:6]
         result.seen_evidence = len(view)
         lessons = deps.rsi.lessons(" ".join(p["questions"]) + " " + " ".join({m.name for c in view for m in c.metrics})) if deps.rsi else []
@@ -159,7 +171,7 @@ def run_expert(deps, p: dict) -> dict:
                   for i, c in enumerate(draft.claims)]
         result.claims = verify_claims(claims, visible, as_of)   # 只能引用自己看得到的证据
         result.stance, result.confidence, result.open_questions = draft.stance, draft.confidence, draft.open_questions
-    except TaskCancelled:
+    except (TaskCancelled, GraphInterrupt):
         raise
     except Exception as e:  # 单个专家失败不拖垮团队，但必须可见
         result.error = f"{type(e).__name__}: {str(e)[:200]}"
@@ -171,6 +183,7 @@ def run_expert(deps, p: dict) -> dict:
         "expert_results": [result.model_dump(mode="json")],
         "evidence": {c.id: c.model_dump(mode="json") for c in own},
         "usage": [result.usage],
+        "unknowns_sys": sys_unknowns,
     }
 
 
@@ -211,10 +224,12 @@ def cross_examine(h, deps, blackboard: list[Claim], red: ExpertResult | None, ev
 
 # ---------- 4. 回应（每位被质询专家一次） ----------
 def respond(h, deps, challenges: list[Challenge], blackboard: list[Claim], evidence: dict[str, EvidenceCard],
-            as_of: date) -> list[Response]:
+            as_of: date) -> tuple[list[Response], list[str]]:
+    """每位被质询专家回应一次。返回（回应列表，失败的专家说明）。"""
     roles = deps.policy.experts.get("roles", {})
     claims = {c.id: c for c in blackboard}
     responses: list[Response] = []
+    failed: list[str] = []
     for expert in dict.fromkeys(c.target_expert for c in challenges):
         spec = EXPERTS.get(expert)
         if spec is None:
@@ -228,9 +243,10 @@ def respond(h, deps, challenges: list[Challenge], blackboard: list[Claim], evide
             out: ResponseSet = h.llm(roles.get(expert, "draft"), RESPONSE_SYSTEM.format(name=spec.name),
                                      f"<challenges>\n{text}\n</challenges>\n\n<evidence>\n{render_evidence(view)}\n</evidence>",
                                      ResponseSet, purpose=f"{expert}_respond")
-        except TaskCancelled:
+        except (TaskCancelled, GraphInterrupt):
             raise
-        except Exception:
+        except Exception as e:      # 回应失败必须可见：主席不能在专家缺席答辩时照常放行
+            failed.append(f"{spec.name}：{type(e).__name__}: {str(e)[:80]}")
             continue
         valid = {ch.id for ch in mine}
         for n, r in enumerate(out.responses):
@@ -243,7 +259,7 @@ def respond(h, deps, challenges: list[Challenge], blackboard: list[Claim], evide
                 revised = verify_claims([c], {i: evidence[i] for i in ids if i in evidence}, as_of)[0]
             responses.append(Response(challenge_id=r.challenge_id, expert=expert, stance=r.stance, text=r.text,
                                       evidence_ids=[i for i in r.evidence_ids if i in evidence], revised_claim=revised))
-    return responses
+    return responses, failed
 
 
 # ---------- 5. 主席综合 ----------
