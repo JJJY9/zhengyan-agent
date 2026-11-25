@@ -125,6 +125,16 @@ def _candidates(cards: list[EvidenceCard], years: set[str], claim_text: str = ""
             if years and period_year and period_year not in years:
                 continue
             metrics.append(m)
+    if claim_text:
+        # 口径限定：主张写明「单季」/「累计」时，只拿同口径的指标做候选，跨口径不能互相背书
+        if "单季" in claim_text:
+            only = [m for m in metrics if m.basis == "single_quarter" or "单季" in m.name]
+        elif "累计" in claim_text:
+            only = [m for m in metrics if m.basis != "single_quarter" and "单季" not in m.name]
+        else:
+            only = []
+        if only:
+            metrics = only
     if claim_text and metrics:
         claim_bg = _bigrams(claim_text)
         named = [m for m in metrics if _bigrams(m.name) & claim_bg]

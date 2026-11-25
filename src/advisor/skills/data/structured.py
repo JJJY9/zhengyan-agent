@@ -60,6 +60,18 @@ def _pit_ok(r: dict, as_of: date) -> bool:
     return bool(_d(r.get("REPORT_DATE"))) and notice is not None and notice <= as_of
 
 
+def _latest_per_period(rows: list[dict]) -> list[dict]:
+    """同一报告期多行（更正重披）只保留披露最晚的一版：NOTICE_DATE 优先，UPDATE_DATE 次之。"""
+    best: dict[str, dict] = {}
+    for r in rows:
+        key = r["REPORT_DATE"][:10]
+        stamp = (r.get("NOTICE_DATE") or "", r.get("UPDATE_DATE") or "")
+        cur = best.get(key)
+        if cur is None or stamp >= (cur.get("NOTICE_DATE") or "", cur.get("UPDATE_DATE") or ""):
+            best[key] = r
+    return list(best.values())
+
+
 class StatementsIn(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
     as_of: date
@@ -90,11 +102,13 @@ class CardsOut(BaseModel):
 
 def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> list[Skill]:
     def statements(inp: StatementsIn) -> StatementsOut:
-        income = [r for r in source.income_rows(inp.code) if _pit_ok(r, inp.as_of)]
+        income = _latest_per_period([r for r in source.income_rows(inp.code) if _pit_ok(r, inp.as_of)])
         if not income:
             raise SkillFailed(f"{inp.code} 在 {inp.as_of} 之前没有已披露的利润表")
-        cash = {r["REPORT_DATE"][:10]: r for r in source.cashflow_rows(inp.code) if _pit_ok(r, inp.as_of)}
-        balance = {r["REPORT_DATE"][:10]: r for r in source.balance_rows(inp.code) if _pit_ok(r, inp.as_of)}
+        cash = {r["REPORT_DATE"][:10]: r
+                for r in _latest_per_period([r for r in source.cashflow_rows(inp.code) if _pit_ok(r, inp.as_of)])}
+        balance = {r["REPORT_DATE"][:10]: r
+                   for r in _latest_per_period([r for r in source.balance_rows(inp.code) if _pit_ok(r, inp.as_of)])}
         income.sort(key=lambda r: r["REPORT_DATE"], reverse=True)
         name = income[0].get("SECURITY_NAME_ABBR") or inp.code
         sym = exchange_prefix(inp.code) + inp.code
