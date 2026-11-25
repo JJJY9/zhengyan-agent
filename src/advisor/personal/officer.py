@@ -23,16 +23,21 @@ def related(thesis: str, text: str) -> float:
     return len(t & _bigrams(text)) / len(t) if t else 0.0
 
 
+def _matches(thesis: str, text: str) -> bool:
+    """匹配要求：覆盖度达标，且至少共享 2 个二元组——单个通用词（如「估值」）不能把相反结论算成支持。"""
+    return related(thesis, text) >= RELATED_MIN and len(_bigrams(thesis) & _bigrams(text)) >= 2
+
+
 def _thesis(d: Dossier, profile: ProfileVersion | None) -> FitCheck:
     holding = profile.holding(d.ticker) if profile else None
     if not holding:
         return FitCheck(key="thesis", label="购买理由", status="unknown",
                         detail="你还没有确认这只股票的购买理由，情境官不替你猜。")
-    claims = [c for c in d.claims if related(holding.thesis, c.text) >= RELATED_MIN]
+    claims = [c for c in d.claims if _matches(holding.thesis, c.text)]
     support = [c for c in claims if c.status == "verified"]
     against = [c for c in claims if c.status in ("disputed", "rejected")]
     weakened = [p for p in d.prior_review if p.verdict in ("weakened", "invalidated")
-                and related(holding.thesis, p.prior_claim) >= RELATED_MIN]
+                and _matches(holding.thesis, p.prior_claim)]
     refs = [c.id for c in support + against]
     if (against or weakened) and not support:
         return FitCheck(key="thesis", label="购买理由", status="conflict", refs=refs,
@@ -54,7 +59,7 @@ def _drawdown(facts, profile: ProfileVersion | None) -> FitCheck:
         return FitCheck(key="drawdown", label="波动承受", status="unknown", detail="你还没有确认可承受的最大回撤。")
     if mdd is None:
         return FitCheck(key="drawdown", label="波动承受", status="unknown", detail="档案里没有近 250 日回撤数据。")
-    seen = abs(float(mdd))
+    seen = round(abs(float(mdd)), 1)          # 与展示精度一致：20.04% 不显示成「20.0% 超出 20%」
     if seen > tol:
         status, word = "conflict", "超出"
     elif seen > tol * 0.8:
@@ -75,21 +80,31 @@ def _horizon(d: Dossier, facts, profile: ProfileVersion | None) -> FitCheck:
     if months < SHORT_HORIZON_MONTHS:
         return FitCheck(key="horizon", label="资金期限", status="attention",
                         detail=f"{months} 个月内要用的钱，短期波动可能直接影响{note}。")
-    if months < 12 and vol is not None and float(vol) >= HIGH_VOL_PCT:
-        return FitCheck(key="horizon", label="资金期限", status="attention",
-                        detail=f"期限 {months} 个月，而近 60 日年化波动率 {float(vol):.0f}%，偏高{note}。")
+    if months < 12:
+        if vol is None:                        # 缺数据不能当作「无风险」
+            return FitCheck(key="horizon", label="资金期限", status="unknown",
+                            detail="档案里没有近 60 日波动数据，无法判断这笔资金期限的风险。")
+        if float(vol) >= HIGH_VOL_PCT:
+            return FitCheck(key="horizon", label="资金期限", status="attention",
+                            detail=f"期限 {months} 个月，而近 60 日年化波动率 {float(vol):.0f}%，偏高{note}。")
     return FitCheck(key="horizon", label="资金期限", status="ok", detail=f"期限 {months} 个月，与档案的复核节奏相容{note}。")
 
 
 def _evidence(d: Dossier) -> FitCheck:
     unresolved = [x.text for x in d.dissents]
-    if d.status == "partial" or d.unknowns:
+    if d.status == "partial":
+        bad = sum(c.status in ("disputed", "rejected") for c in d.claims)
         return FitCheck(key="evidence", label="结论完整度", status="attention",
-                        detail=f"档案是部分结论：未知 {len(d.unknowns)} 项、保留分歧 {len(unresolved)} 条，按你的约束需要更多确认。")
+                        detail=f"档案是部分结论：存疑/驳回 {bad} 条、未知 {len(d.unknowns)} 项、"
+                               f"保留分歧 {len(unresolved)} 条，按你的约束需要更多确认。")
+    if d.unknowns or unresolved:
+        return FitCheck(key="evidence", label="结论完整度", status="attention",
+                        detail=f"档案已通过质量门控，但仍有未知 {len(d.unknowns)} 项、保留分歧 {len(unresolved)} 条，按你的约束需要留意。")
     return FitCheck(key="evidence", label="结论完整度", status="ok", detail="档案已通过质量门控。")
 
 
-def _freshness(subscribed: bool, open_alerts: list[tuple[str, str]], scan_note: str = "") -> FitCheck:
+def _freshness(subscribed: bool, open_alerts: list[tuple[str, str]], scan_note: str = "",
+               scan_at: str | None = None) -> FitCheck:
     if open_alerts:
         return FitCheck(key="freshness", label="待复核", status="attention", refs=[a for a, _ in open_alerts],
                         detail="订阅发现新变化：" + "；".join(t for _, t in open_alerts[:3]))
@@ -97,31 +112,36 @@ def _freshness(subscribed: bool, open_alerts: list[tuple[str, str]], scan_note: 
         if "取数失败" in (scan_note or ""):     # 扫描失败不等于没有变化：不能显示「未发现变化」
             return FitCheck(key="freshness", label="待复核", status="unknown",
                             detail=f"最近一次自动扫描没能取到数据，无法确认是否有新变化：{scan_note[:120]}")
+        if not scan_at:                        # 刚订阅还没扫描过
+            return FitCheck(key="freshness", label="待复核", status="unknown",
+                            detail="订阅还没有扫描过，暂时无法确认是否有新变化。")
         return FitCheck(key="freshness", label="待复核", status="ok", detail="订阅最近一次扫描未发现影响结论的变化。")
     return FitCheck(key="freshness", label="待复核", status="unknown", detail="还没订阅这只股票，新财报和公告不会自动提醒。")
 
 
 def assess(d: Dossier, evidence: list[EvidenceCard], profile: ProfileVersion | None,
            subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None,
-           scan_note: str = "") -> PersonalFit:
+           scan_note: str = "", scan_at: str | None = None) -> PersonalFit:
     facts = metric_facts(evidence)
     checks = [_thesis(d, profile), _drawdown(facts, profile), _horizon(d, facts, profile), _evidence(d),
-              _freshness(subscribed, open_alerts or [], scan_note)]
+              _freshness(subscribed, open_alerts or [], scan_note, scan_at)]
     n = {s: sum(c.status == s for c in checks) for s in ("conflict", "attention", "unknown")}
-    summary = ("与你确认的约束有冲突，建议先复核再做决定" if n["conflict"] else
-               "大体相容，但有需要留意的地方" if n["attention"] else
-               "缺少你的确认，情境官无法判断" if n["unknown"] == len(checks) else "与你确认的约束相容")
+    personal = [c.status for c in checks if c.key in ("thesis", "drawdown", "horizon")]
+    no_basis = all(s == "unknown" for s in personal)     # 没有任何已确认的个人约束可对照
+    summary = ("缺少你的确认，情境官无法判断" if no_basis else
+               "与你确认的约束有冲突，建议先复核再做决定" if n["conflict"] else
+               "大体相容，但有需要留意的地方" if n["attention"] else "与你确认的约束相容")
     return PersonalFit(ticker=d.ticker, dossier_version=d.version, profile_version=profile.version if profile else None,
                        checks=checks, summary=summary)
 
 
 def profile_impact(d: Dossier, evidence: list[EvidenceCard], old: ProfileVersion | None, new: ProfileVersion,
                    subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None,
-                   scan_note: str = "") -> dict | None:
+                   scan_note: str = "", scan_at: str | None = None) -> dict | None:
     """约束改了以后，同一份档案的个人情境结论哪里变了。只看结论状态的变化；购买理由改了也算。
     依赖链：用户约束 → 个人情境结论。档案里的研究结论不依赖你的约束，不需要重新研究。"""
-    before = assess(d, evidence, old, subscribed, open_alerts, scan_note)
-    after = assess(d, evidence, new, subscribed, open_alerts, scan_note)
+    before = assess(d, evidence, old, subscribed, open_alerts, scan_note, scan_at)
+    after = assess(d, evidence, new, subscribed, open_alerts, scan_note, scan_at)
     changes = []
     for b, a in zip(before.checks, after.checks):
         thesis_edit = a.key == "thesis" and b.detail != a.detail

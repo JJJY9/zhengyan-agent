@@ -21,6 +21,12 @@ class ProfileStore:
         doc = self.col.find_one({}, sort=[("version", DESCENDING)], projection={"_id": 0})
         return ProfileVersion.model_validate(doc) if doc else None
 
+    def get(self, version: int | None) -> ProfileVersion | None:
+        if version is None:
+            return None
+        doc = self.col.find_one({"version": version}, projection={"_id": 0})
+        return ProfileVersion.model_validate(doc) if doc else None
+
     def history(self, limit: int = 20) -> list[ProfileVersion]:
         cur = self.col.find({}, projection={"_id": 0}).sort("version", DESCENDING).limit(limit)
         return [ProfileVersion.model_validate(d) for d in cur]

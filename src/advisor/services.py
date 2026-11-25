@@ -35,8 +35,8 @@ class Services:
     def confirm_profile(self, data, actor: str, confirmed: bool):
         """保存新版本约束，并标出哪些档案的个人情境结论因此改变（个人信息只在本地比对）。"""
         from advisor.personal import profile_impact
-        prev = self.profiles.current()
         v = self.profiles.confirm(data, actor, confirmed)
+        prev = self.profiles.get(v.parent_version)   # 并发确认时 v.parent_version 可能已前进：按真实父版本算影响
         repo = self.deps.repo
         impact = []
         for row in repo.list_dossiers():
@@ -44,9 +44,10 @@ class Services:
             if d is None:
                 continue
             sub = self.watch.store.get_sub(d.ticker)
-            alerts = [(a.id, "、".join(e.title for e in a.events)) for a in self.watch.store.list_alerts(d.ticker, "open")]
+            alerts = [(a.id, "、".join(e.title for e in a.events))
+                      for a in self.watch.store.list_alerts(d.ticker) if a.status in ("open", "reviewing")]
             if hit := profile_impact(d, repo.get_evidence(d.evidence_ids), prev, v, bool(sub and sub.active), alerts,
-                                     sub.last_scan_note if sub else ""):
+                                     sub.last_scan_note if sub else "", sub.last_scan_at if sub else None):
                 impact.append(hit)
         self.profiles.set_impact(v.version, impact)
         v.impact = impact
