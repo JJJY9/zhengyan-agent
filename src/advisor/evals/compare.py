@@ -23,26 +23,44 @@ def load_cases(path=DEFAULT_CASES) -> list[dict]:
 def summarize(results: list[dict], baseline: str = "standard", candidate: str = "deep") -> dict:
     by_route: dict[str, list[dict]] = {}
     for r in results:
-        if r.get("metrics"):
-            by_route.setdefault(r["route"], []).append(r["metrics"])
-    agg = {route: {k: round(mean(m[k] for m in ms), 3) for k in
-                   ("score", "verified_rate", "coverage_rate", "numeric_accuracy", "dissents", "tokens", "search_calls", "seconds")}
-           for route, ms in by_route.items()}
+        by_route.setdefault(r["route"], []).append(r)
+    keys = ("score", "verified_rate", "coverage_rate", "numeric_accuracy", "dissents", "tokens", "search_calls", "seconds")
+    agg = {}
+    for route, rs in by_route.items():
+        ok = [r["metrics"] for r in rs if r.get("metrics")]
+        entry = {}
+        for k in keys:
+            vals = [m[k] for m in ok if m.get(k) is not None]
+            entry[k] = round(mean(vals), 3) if vals else None
+        entry["cases"] = len(rs)
+        entry["failed"] = len(rs) - len(ok)
+        entry["success_rate"] = round(len(ok) / len(rs), 3) if rs else 0.0
+        # 失败用例按 0 分计入有效分：只在成功子集上取均值会奖励「躲开难题」
+        entry["score_all"] = round(sum(m["score"] for m in ok) / len(rs), 3) if rs else 0.0
+        agg[route] = entry
     verdict = {"decision": "insufficient", "text": "样本不足，无法判断"}
     if baseline in agg and candidate in agg:
+        failed = agg[baseline]["failed"] + agg[candidate]["failed"]
         delta = agg[candidate]["score"] - agg[baseline]["score"]
-        ratio = agg[candidate]["tokens"] / max(agg[baseline]["tokens"], 1)
-        non_inferior, affordable = delta >= -NON_INFERIOR_MARGIN, ratio <= MAX_COST_RATIO
-        ok = non_inferior and affordable
+        ratio = agg[candidate]["tokens"] / max(agg[baseline]["tokens"], 1) if agg[candidate]["tokens"] is not None else None
         verdict = {
-            "decision": "adopt_multi_expert" if ok else "keep_single_agent",
-            "quality_delta": round(delta, 3), "cost_ratio": round(ratio, 2),
-            "non_inferior": non_inferior, "affordable": affordable,
-            "text": ("多专家通过准入：质量不退化且成本在上限内（仅用于争议深研）" if ok else
-                     "保留单 Agent 基线：" + ("质量退化" if not non_inferior else "") +
-                     ("、" if not non_inferior and not affordable else "") + ("成本超过上限" if not affordable else "")),
+            "decision": "insufficient",
+            "quality_delta": round(delta, 3), "cost_ratio": round(ratio, 2) if ratio is not None else None,
+            "failed_cases": failed,
             "criteria": {"non_inferior_margin": NON_INFERIOR_MARGIN, "max_cost_ratio": MAX_COST_RATIO},
         }
+        if failed or agg[baseline]["cases"] != agg[candidate]["cases"]:
+            verdict["text"] = f"{failed} 个用例没有产出档案（失败或未完成），评测不完整，先排查后再比较"
+        else:
+            non_inferior, affordable = delta >= -NON_INFERIOR_MARGIN, ratio is not None and ratio <= MAX_COST_RATIO
+            ok = non_inferior and affordable
+            verdict.update({
+                "decision": "adopt_multi_expert" if ok else "keep_single_agent",
+                "non_inferior": non_inferior, "affordable": affordable,
+                "text": ("多专家通过准入：质量不退化且成本在上限内（仅用于争议深研）" if ok else
+                         "保留单 Agent 基线：" + ("质量退化" if not non_inferior else "") +
+                         ("、" if not non_inferior and not affordable else "") + ("成本超过上限" if not affordable else "")),
+            })
     return {"routes": agg, "verdict": verdict}
 
 
@@ -62,8 +80,13 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                     req = ResearchRequest(question=case["question"], ticker=case.get("ticker"), route=route,
                                           as_of=date.fromisoformat(case["as_of"]) if case.get("as_of") else None)
                     tid = svc.start(req, background=False, namespace=f"eval-{run_id}-{route}")
-                    task = repo.get_task(tid)
                     entry["task_id"] = tid
+                    task = repo.get_task(tid)
+                    if task["status"] == "waiting_approval":
+                        # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续
+                        entry["auto_approved"] = True
+                        svc.research.resume(tid, True, background=False)
+                        task = repo.get_task(tid)
                     if task["status"] == "done":
                         d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])
                         ev = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}

@@ -59,7 +59,10 @@ export interface DossierDiff {
   from_version: number; to_version: number; as_of: { old: string; new: string }; route: { old: string; new: string };
   status: { old: string; new: string };
   metrics: { name: string; old: MetricSnap | null; new: MetricSnap | null; changed: boolean }[];
-  claims: { kept: { old: string; new: string; similarity: number }[]; added: string[]; removed: string[] };
+  claims: {
+    kept: { old: string; new: string; similarity: number }[]; added: string[]; removed: string[];
+    status_changed: { text: string; old_status: string; new_status: string; similarity: number }[];
+  };
   stale_claims: { text: string; reason: string }[];
   evidence_added: { id: string; title: string; level: Level; source_type: string; date: string | null }[];
   unknowns: { resolved: string[]; new: string[] }; triggers: { old: string[]; new: string[] }; prior_review: PriorReview[];
@@ -70,7 +73,7 @@ export interface WorkingItem { task_id: string; kind: string; key: string; data:
 
 export interface EvalMetrics {
   claims: number; verified: number; disputed: number; rejected: number; verified_rate: number; numeric_claims: number;
-  numeric_accuracy: number; coverage: Record<string, boolean>; coverage_rate: number; dissents: number; unknowns: number;
+  numeric_accuracy: number | null; coverage: Record<string, boolean>; coverage_rate: number; dissents: number; unknowns: number;
   independent_b_sources: number; quality_decision: string; tokens: number; search_calls: number; fetch_calls: number;
   seconds: number; score: number;
 }
@@ -85,7 +88,7 @@ export interface EvalRun {
   routes?: string[]; cases?: { id: string; question: string }[]; case_count?: number;
   results?: { case: string; route: string; task_id?: string; dossier_key?: string; version?: number; metrics?: EvalMetrics; error?: string }[];
   update_results?: UpdateCase[]; metric_labels?: Record<string, string>; update_summary?: Record<string, number | null>; labeled?: number;
-  summary?: { routes: Record<string, Record<string, number>>; verdict: { decision: string; text: string; quality_delta?: number; cost_ratio?: number; non_inferior?: boolean; affordable?: boolean; criteria?: Record<string, number> } };
+  summary?: { routes: Record<string, Record<string, number | null>>; verdict: { decision: string; text: string; quality_delta?: number; cost_ratio?: number | null; non_inferior?: boolean; affordable?: boolean; failed_cases?: number; criteria?: Record<string, number> } };
   rows?: { question: string; label: string; route: string; source: string; probs: Record<string, number>; abstain: boolean; correct: boolean }[];
   confusion?: Record<string, Record<string, number>>; accuracy?: number; deep_recall?: number; abstain_rate?: number;
   calibration?: { by_temperature: Record<string, { nll: number; ece: number; abstain_rate: number }>; best_temperature: number };
