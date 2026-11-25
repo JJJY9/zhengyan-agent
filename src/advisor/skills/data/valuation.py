@@ -12,7 +12,7 @@ from advisor.evidence import EvidenceFactory
 from advisor.harness.errors import SkillFailed
 from advisor.skills.compute.finance import percentile_rank, q, ttm
 from advisor.skills.data.ashare import AShareSource
-from advisor.skills.data.structured import CardsOut, to_decimal
+from advisor.skills.data.structured import CardsOut, _latest_per_period, to_decimal
 
 
 class ValuationIn(BaseModel):
@@ -53,13 +53,21 @@ def _latest_balance(points: list[tuple[date, date, Decimal]], day: date) -> Deci
 
 def build_valuation_skill(source: AShareSource, factory: EvidenceFactory) -> Skill:
     def run(inp: ValuationIn) -> CardsOut:
-        income = []
+        rows = []
         for r in source.income_rows(inp.code):
             notice, period = _d(r.get("NOTICE_DATE")), _d(r.get("REPORT_DATE"))
-            np_ = to_decimal(r.get("PARENT_NETPROFIT"))
-            if notice is None or period is None or notice > inp.as_of or np_ is None:
+            if notice is None or period is None or to_decimal(r.get("PARENT_NETPROFIT")) is None:
                 continue
-            income.append((notice, period.isoformat(), np_, r))
+            if notice <= inp.as_of:                     # PIT：先筛可见，再在可见行里取最新披露
+                rows.append(r)
+        # 同一报告期多行（追溯调整/更正重披）取披露最晚的一版：行序由数据源决定、会漂移，
+        # 直接按行覆盖会让 PE/TTM 随数据源返回顺序变化
+        income = []
+        for r in _latest_per_period(rows):
+            notice, period = _d(r.get("NOTICE_DATE")), _d(r.get("REPORT_DATE"))
+            if notice is None or period is None:
+                continue
+            income.append((notice, period.isoformat(), to_decimal(r.get("PARENT_NETPROFIT")), r))
         if not income:
             raise SkillFailed("没有可用利润表，无法估值")
         name = income[0][3].get("SECURITY_NAME_ABBR") or inp.code
