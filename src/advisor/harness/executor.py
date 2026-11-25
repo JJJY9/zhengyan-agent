@@ -155,7 +155,9 @@ class Harness:
                 record.update(status=type(e).__name__, error=str(e))
                 raise
             except ValidationError as e:
-                record.update(status="invalid_input", error=str(e)[:300])
+                # pydantic 的错误文本含 input_value 原文：个人查询会随审计落盘，只记录类型与位置
+                record.update(status="invalid_input",
+                              error="; ".join(f"{err['loc']}: {err['msg']}" for err in e.errors(include_input=False))[:300])
                 raise HarnessDenied(f"{name} 参数不符合契约: {e.errors()[0]['msg']}") from e
             except GraphInterrupt:
                 record["status"] = "awaiting_approval"
@@ -212,14 +214,13 @@ class Harness:
     def _run_with_retry(self, skill, inp: BaseModel, attempts: list[dict]) -> BaseModel:
         last: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
+            self.budget.check()                                # 总时限与预算种类无关：每次尝试前都复查
             if skill.spec.budget_kind:
                 self.budget.check(skill.spec.budget_kind)      # 每次真实调用前重新检查
                 self._charge(skill.spec.budget_kind)           # 每次真实调用都计费：重试不是免费的
             t0 = time.time()
             try:
                 out = _call_with_timeout(lambda: skill.run(inp), skill.spec.timeout_s)
-                attempts.append({"n": attempt + 1, "status": "ok", "duration_ms": int((time.time() - t0) * 1000)})
-                return out
             except _SkillTimeout:
                 last = SkillFailed(f"{skill.spec.name} 超时（{skill.spec.timeout_s}s）", retryable=True)
                 attempts.append({"n": attempt + 1, "status": "timeout", "error": str(last),
@@ -233,6 +234,10 @@ class Harness:
                 last = SkillFailed(f"{skill.spec.name} 失败: {e}", retryable=retry)
                 attempts.append({"n": attempt + 1, "status": "failed", "error": str(e)[:200],
                                  "duration_ms": int((time.time() - t0) * 1000)})
+            else:
+                attempts.append({"n": attempt + 1, "status": "ok", "duration_ms": int((time.time() - t0) * 1000)})
+                self.budget.check()                            # 返回后复查总时限：超限的结论不再提交
+                return out
             if not getattr(last, "retryable", False) or attempt == MAX_RETRIES:
                 break
             self.check_cancelled()

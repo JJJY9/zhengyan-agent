@@ -14,7 +14,7 @@ class RiskProfile(BaseModel):
 
 class Holding(BaseModel):
     """一只关注或持有的股票：为什么买、打算拿多久。不记金额与账户。"""
-    ticker: str = Field(pattern=r"^\d{6}$")
+    ticker: str = Field(pattern=r"^[0-9]{6}$")
     name: str = ""
     thesis: str = Field(min_length=4, max_length=300, description="购买理由 / 关注理由")
     horizon_months: int | None = Field(default=None, ge=1, le=600)

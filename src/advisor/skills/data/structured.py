@@ -73,7 +73,7 @@ def _latest_per_period(rows: list[dict]) -> list[dict]:
 
 
 class StatementsIn(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(pattern=r"^[0-9]{6}$")
     as_of: date
     periods: int = Field(default=8, ge=5, le=16)
 
@@ -84,13 +84,13 @@ class StatementsOut(BaseModel):
 
 
 class DailyIn(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(pattern=r"^[0-9]{6}$")
     as_of: date
     lookback_days: int = Field(default=400, ge=30, le=800)
 
 
 class AnnouncementsIn(BaseModel):
-    code: str = Field(pattern=r"^\d{6}$")
+    code: str = Field(pattern=r"^[0-9]{6}$")
     as_of: date
     lookback_days: int = Field(default=120, ge=7, le=400)
     limit: int = Field(default=30, ge=1, le=100)

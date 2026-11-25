@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/watch")
 
 
 class SubscribeIn(BaseModel):
-    ticker: str = Field(pattern=r"^\d{6}$")
+    ticker: str = Field(pattern=r"^[0-9]{6}$")
     price_move_pct: float | None = Field(default=None, gt=0, le=100)
 
 

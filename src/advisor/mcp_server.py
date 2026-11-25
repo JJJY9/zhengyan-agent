@@ -3,6 +3,7 @@ from datetime import date
 
 from fastmcp import FastMCP
 
+from advisor.evidence import sanitize
 from advisor.graph.deps import Deps, build_default_deps
 from advisor.harness import Budget
 
@@ -30,7 +31,14 @@ def tool_functions(deps: Deps) -> dict:
 
     def web_search(query: str, as_of: date) -> dict:
         """时点约束的网页搜索（结果只是线索）。"""
-        return call("web.search", query=query, as_of=as_of)
+        out = call("web.search", query=query, as_of=as_of)
+        # 外部 Agent 直接消费原始结果：与内部 gather 同口径清洗标题/摘要/片段，
+        # 注入文本（<script>、「忽略之前的指令」等）不能经 MCP 出口绕过防护
+        for hit in out.get("hits", []):
+            hit["title"] = sanitize(hit.get("title") or "", max_chars=200)[0]
+            hit["summary"] = sanitize(hit.get("summary") or "", max_chars=800)[0]
+            hit["snippet"] = sanitize(hit.get("snippet") or "", max_chars=800)[0]
+        return out
 
     return {"financial_statements": financial_statements, "market_daily": market_daily,
             "announcements": announcements, "web_search": web_search}
