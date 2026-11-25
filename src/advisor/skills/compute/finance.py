@@ -56,7 +56,7 @@ def single_quarter(cumulative: Metric, previous_cumulative: Metric | None) -> Me
             raise BasisMismatch(f"上期累计不匹配: {pp}")
         value = cumulative.value - previous_cumulative.value
     return Metric(
-        name=f"{cumulative.name}(单季)", field=cumulative.field, value=value, unit=cumulative.unit,
+        name=f"{cumulative.name}(单季)", field=f"{cumulative.field}_SQ", value=value, unit=cumulative.unit,
         period=cumulative.period, basis="single_quarter", note=f"Q{(cp.month - 1) // 3 + 1} 由累计值推算",
     )
 

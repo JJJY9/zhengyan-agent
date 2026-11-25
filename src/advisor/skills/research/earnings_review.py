@@ -1,5 +1,6 @@
 """研究 SOP：业绩复核。步骤固定、检查点明确；模型只负责查询规划与受约束的综合。"""
 import json
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Literal
@@ -59,9 +60,26 @@ def _metric(card: EvidenceCard, field: str) -> Metric | None:
     return next((m for m in card.metrics if m.field == field), None)
 
 
+def _norm_period(period: str) -> str:
+    """报告期归一为 YYYY-MM-DD：兼容紧凑 YYYYMMDD（与 ttm/_period_key 的口径一致）。"""
+    digits = re.sub(r"\D", "", str(period))[:8]
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}" if len(digits) == 8 else str(period)[:10]
+
+
+def _ts(card: EvidenceCard) -> float:
+    return card.published_at.timestamp() if card.published_at else 0.0
+
+
 def derive_metrics(harness: Harness, statements: list[EvidenceCard], factory: EvidenceFactory, as_of: date) -> list[EvidenceCard]:
     """对最新报告期做同口径计算，结果写成 calc 证据卡并记录血缘。"""
-    by_period = {c.metrics[0].period: c for c in statements if c.metrics}
+    by_period: dict[str, EvidenceCard] = {}
+    for c in statements:
+        if not c.metrics:
+            continue
+        key = _norm_period(c.metrics[0].period)
+        cur = by_period.get(key)
+        if cur is None or _ts(c) >= _ts(cur):      # 同一报告期更正重披：取披露更晚的版本，不看输入顺序
+            by_period[key] = c
     if not by_period:
         return []
     latest = max(by_period)
@@ -70,64 +88,80 @@ def derive_metrics(harness: Harness, statements: list[EvidenceCard], factory: Ev
     cur = by_period[latest]
 
     def prev_cum(period: str) -> EvidenceCard | None:
-        py, pm = int(period[:4]), int(period[5:7])
-        return None if pm == 3 else by_period.get(f"{py}-{pm - 3:02d}-{'30' if pm - 3 in (6, 9) else '31'}")
+        d = date.fromisoformat(_norm_period(period))
+        return None if d.month == 3 else by_period.get(f"{d.year}-{d.month - 3:02d}-{'30' if d.month - 3 in (6, 9) else '31'}")
 
     out: list[Metric] = []
     sources: set[str] = {cur.id}
+    used_cards: list[EvidenceCard] = [cur]
+
+    def use(card: EvidenceCard | None) -> None:
+        if card is not None:
+            sources.add(card.id)
+            used_cards.append(card)
+
     for field in KEY_FIELDS:
         m = _metric(cur, field)
         if m is None:
             continue
-        try:
-            if prior_year and (pm := _metric(prior_year, field)):
+        pm = _metric(prior_year, field) if prior_year else None
+        if pm is not None:
+            try:                                   # 基期为 0 等只影响同比，不连带丢掉单季
                 out.append(harness.call("compute.same_basis_growth", current=m, prior=pm).metric)
-                sources.add(prior_year.id)
-            prev = prev_cum(latest)
+                use(prior_year)
+            except SkillFailed:
+                pass
+        prev = prev_cum(latest)
+        try:
             sq = harness.call("compute.single_quarter", cumulative=m,
                               previous_cumulative=_metric(prev, field) if prev else None).metric
-            out.append(sq)
-            if prev:
-                sources.add(prev.id)
-            # 单季同比：去年同季也由累计推算
-            if prior_year:
-                prev_py = prev_cum(prior_year.metrics[0].period)
-                pm = _metric(prior_year, field)
-                if pm:
-                    sq_py = harness.call("compute.single_quarter", cumulative=pm,
-                                         previous_cumulative=_metric(prev_py, field) if prev_py else None).metric
-                    out.append(harness.call("compute.same_basis_growth", current=sq, prior=sq_py).metric)
-                    if prev_py:
-                        sources.add(prev_py.id)
         except SkillFailed:
-            continue  # 口径不可比则不出该指标，交由 unknowns 体现
+            continue
+        out.append(sq)
+        use(prev)
+        if pm is not None:
+            prev_py = prev_cum(_norm_period(pm.period))
+            try:
+                sq_py = harness.call("compute.single_quarter", cumulative=pm,
+                                     previous_cumulative=_metric(prev_py, field) if prev_py else None).metric
+                out.append(harness.call("compute.same_basis_growth", current=sq, prior=sq_py).metric)
+                use(prev_py)
+                use(prior_year)
+            except SkillFailed:
+                pass
     for field in POINT_FIELDS:  # 资产负债表时点值：同比
-        m, pm = _metric(cur, field), _metric(prior_year, field) if prior_year else None
+        m = _metric(cur, field)
+        pm = _metric(prior_year, field) if prior_year else None
         if m and pm:
             try:
                 out.append(harness.call("compute.same_basis_growth", current=m, prior=pm).metric)
+                use(prior_year)
             except SkillFailed:
                 pass
-    # 本期与去年同期都算，避免模型自行计算比率
-    for card in (cur, prior_year):
-        if card is None:
-            continue
-        rev, np_, ocf = (_metric(card, f) for f in ("OPERATE_INCOME", "PARENT_NETPROFIT", "NETCASH_OPERATE"))
+    # 比率只算最新期：去年同期同名比率会成为该字段唯一值，被当成最新事实
+    rev, np_, ocf = (_metric(cur, f) for f in ("OPERATE_INCOME", "PARENT_NETPROFIT", "NETCASH_OPERATE"))
+    if rev and np_ and rev.value > 0:
         try:
-            if rev and np_:
-                out.append(harness.call("compute.ratio", numerator=np_, denominator=rev, name="归母净利率(累计)", field="NET_MARGIN").metric)
-            if ocf and np_:
-                out.append(harness.call("compute.ratio", numerator=ocf, denominator=np_, name="经营现金流/归母净利润(累计)", field="OCF_TO_NP").metric)
+            out.append(harness.call("compute.ratio", numerator=np_, denominator=rev, name="归母净利率(累计)", field="NET_MARGIN").metric)
         except SkillFailed:
-            continue
+            pass
+    if ocf and np_ and np_.value > 0:              # 分母非正时「现金含量」无意义（双负会翻成正数）
+        try:
+            out.append(harness.call("compute.ratio", numerator=ocf, denominator=np_, name="经营现金流/归母净利润(累计)", field="OCF_TO_NP").metric)
+        except SkillFailed:
+            pass
     if not out:
         return []
-    card =factory.make(
+    weak = any(c.pit == "weak" for c in used_cards)
+    caveats = ["由 A 级财报数据经 Decimal 计算得出"]
+    if weak:
+        caveats.append("输入财报含追溯调整（pit=weak），计算结果口径可能已被更新")
+    card = factory.make(
         content=json.dumps([m.model_dump(mode="json") for m in out], ensure_ascii=False),
         level="A", source_type="calc", title=f"{latest} 同口径派生指标（确定性计算）", site_name="系统计算",
-        origin_id=f"calc:{cur.origin_id}", as_of=as_of, published_at=cur.published_at,
+        origin_id=f"calc:{cur.origin_id}", as_of=as_of, published_at=cur.published_at, pit="weak" if weak else "strong",
         excerpt="；".join(f"{m.name} {fmt_value(m)}" for m in out), metrics=out,
-        derived_from=sorted(sources), caveats=["由 A 级财报数据经 Decimal 计算得出"],
+        derived_from=sorted(sources), caveats=caveats,
         skill="compute.*", skill_version="1.0.0",
     )
     return [card]

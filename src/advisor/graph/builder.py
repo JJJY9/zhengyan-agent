@@ -1,8 +1,10 @@
 """LangGraph 主图。
 
-标准/快查：intake → authorize → route → plan → collect → search → draft → verify → quality_gate → commit
+标准/快查：intake → authorize → route → collect → plan → search → draft → verify → quality_gate → commit
 争议深研：intake → authorize → route → collect → team_plan ⇉ expert_round×N → blackboard → cross_exam → rebuttal → chair → deep_gate → commit
 检查点升级：标准研究的 quality_gate 可把流程升级到 team_plan（复用已取证据，只升级一次）。
+
+collect 先于 plan：搜索词要用已核验的公司名（intake 的名字可能识别错），避免整轮检索搜错公司。
 """
 from langgraph.graph import END, START, StateGraph
 
@@ -41,14 +43,13 @@ def build_graph(deps: Deps, checkpointer=None):
     g.add_edge(START, "intake")
     g.add_conditional_edges("intake", _stop_if("failed"), {"go": "authorize", "stop": END})
     g.add_conditional_edges("authorize", _stop_if("cancelled"), {"go": "route", "stop": END})
-    g.add_conditional_edges("route", lambda s: "collect" if s["route"] == "deep" else "plan",
-                            {"collect": "collect", "plan": "plan"})
-    g.add_edge("plan", "collect")
+    g.add_edge("route", "collect")
     g.add_conditional_edges(
         "collect",
-        lambda s: "stop" if s.get("status") == "failed" else ("team_plan" if s["route"] == "deep" else "search"),
-        {"stop": END, "team_plan": "team_plan", "search": "search"},
+        lambda s: "stop" if s.get("status") == "failed" else ("team_plan" if s["route"] == "deep" else "plan"),
+        {"stop": END, "team_plan": "team_plan", "plan": "plan"},
     )
+    g.add_edge("plan", "search")
     g.add_edge("search", "draft")
     g.add_conditional_edges("draft", _stop_if("failed"), {"go": "verify", "stop": END})
     g.add_edge("verify", "quality_gate")
