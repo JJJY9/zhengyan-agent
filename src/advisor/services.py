@@ -15,6 +15,8 @@ from advisor.rsi import RSIRunner
 from advisor.strategy import StrategyBook, StrategyStore
 from advisor.watch import Watcher, WatchStore
 
+STARTUP_RECOVER_AGE_S = 600       # 启动即回收：一次模型调用最长 300s，停滞 10 分钟的任务线程不可能还活着
+
 
 @dataclass
 class Services:
@@ -27,6 +29,8 @@ class Services:
 
     def __post_init__(self):
         db = self.deps.repo.db
+        # 进程重启后把上一实例遗留的 queued/running 任务标记失败（短阈值：重启前的任务线程已不存在）
+        self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S)
         self.rsi = RSIRunner(self.deps, self.deps.ledger, self.deps.rsi)
         self.profiles = ProfileStore(db)
         self.watch = Watcher(self.deps, WatchStore(db))
@@ -40,7 +44,7 @@ class Services:
         repo = self.deps.repo
         impact = []
         for row in repo.list_dossiers():
-            d = repo.get_dossier(row["key"])
+            d = repo.current_dossier(row["key"])      # 当前档案按研究时点取，回填的高版本旧档案不算最新
             if d is None:
                 continue
             sub = self.watch.store.get_sub(d.ticker)

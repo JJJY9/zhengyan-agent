@@ -26,6 +26,7 @@ TRIGGER_WORDS = {
 }
 PRICE_SOURCES = ("market.daily", "valuation.snapshot")
 ANNOUNCE_WINDOWS = 5              # 公告回看最多 5×400 天，覆盖大多数档案时点，避免窗口滑动重复提醒
+RECOVER_AGE_S = 1800              # 复核任务停滞超过此时长视为僵尸（≥ 深研 1800s 总时限）
 
 
 def _norm_period(period: str) -> str:
@@ -62,7 +63,9 @@ class Watcher:
         """有变化返回提醒（同一批变化只提醒一次），没有变化返回 None。"""
         today = today or date.today()
         repo = self.deps.repo
-        d = repo.get_dossier(ticker)
+        # 当前档案按研究时点取：CLI 回填会产出「版本号更高、as_of 更早」的档案，
+        # 按版本号取会把回填的旧结论当最新，误报「新财报」并错误关闭真实提醒
+        d = repo.current_dossier(ticker, today)
         if d is None:
             raise WatchError(f"{ticker} 还没有档案，先做一次研究再订阅")
         self._supersede_open_alerts(d)          # 新版本已覆盖的旧提醒自动关闭，避免同批提醒长期 open
@@ -98,11 +101,13 @@ class Watcher:
         return alert
 
     def _supersede_open_alerts(self, d: Dossier) -> None:
-        """档案已有新版本：旧版本触发的待处理提醒自动关闭（复核完成后 open_alerts 能清零）。"""
+        """档案已有更新的「研究时点」版本：旧版本触发的待处理提醒自动关闭（复核完成后 open_alerts 能清零）。"""
+        versions = {v["version"]: str(v.get("as_of"))[:10] for v in self.deps.repo.list_dossier_versions(d.ticker)}
+        current = (str(d.as_of)[:10], d.version)
         for a in self.store.list_alerts(d.ticker, "open"):
-            if a.dossier_version < d.version:
+            if (versions.get(a.dossier_version, ""), a.dossier_version or 0) < current:
                 self.store.update_alert(a.id, status="dismissed",
-                                        note=f"已有新版本 v{d.version}，旧提醒自动关闭")
+                                        note=f"已有更新的档案 v{d.version}（时点 {d.as_of}），旧提醒自动关闭")
 
     def scan_all(self, today: date | None = None, log=lambda m: None) -> list[Alert]:
         self.sync()                             # 定时/CLI 扫描也回写复核结果（不再只在打开网页时同步）
@@ -232,7 +237,8 @@ class Watcher:
         self.store.update_alert(alert_id, status="dismissed", note=note)
 
     def sync(self) -> None:
-        """复核任务结束后回写提醒状态。"""
+        """复核任务结束后回写提醒状态；进程崩溃遗留的僵尸任务先标记失败，提醒随之解锁。"""
+        self.deps.repo.recover_stale_tasks(RECOVER_AGE_S)
         for a in self.store.list_alerts(status="reviewing"):
             task = self.deps.repo.get_task(a.review_task_id or "")
             if not task:                        # 任务缺失/编号没写上：放回待处理，避免永久卡死

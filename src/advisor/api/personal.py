@@ -35,7 +35,7 @@ class FitOut(BaseModel):
 @router.get("/fit/{ticker}", response_model=FitOut)
 def fit(ticker: str, svc: Svc):
     """个人情境官：把最新档案对照你确认过的约束。纯本地规则，不调用模型。"""
-    d = svc.deps.repo.get_dossier(ticker)
+    d = svc.deps.repo.current_dossier(ticker)
     if d is None:
         raise HTTPException(404, "档案不存在")
     profile = svc.profiles.current()

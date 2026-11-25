@@ -28,7 +28,7 @@ def overview(svc: Svc):
 
 @router.post("/subscriptions")
 def subscribe(body: SubscribeIn, svc: Svc):
-    d = svc.deps.repo.get_dossier(body.ticker)
+    d = svc.deps.repo.current_dossier(body.ticker)
     if d is None:
         raise HTTPException(409, "还没有这只股票的档案，先做一次研究再订阅")
     pct = body.price_move_pct or float(svc.deps.policy.watch.get("default_price_move_pct", 10))
