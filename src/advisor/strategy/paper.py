@@ -5,6 +5,7 @@
 - 等权、整手（100 股）、不加杠杆；系统不执行任何真实交易。
 """
 from datetime import date
+import threading
 from typing import Any, Callable
 
 from pymongo.errors import DuplicateKeyError
@@ -29,6 +30,12 @@ class PaperBook:
         self.store = store
         self.open_alerts = open_alerts
         self.initial_cash = float(deps.policy.strategy.get("initial_cash", 1_000_000))
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _lock(self, card_id: str, version: int) -> threading.Lock:
+        with self._locks_guard:
+            return self._locks.setdefault(f"{card_id}:{version}", threading.Lock())
 
     # ---------- 信号：当天可见的事实 ----------
     def dossier_at(self, ticker: str, day: date) -> Dossier | None:
@@ -73,6 +80,11 @@ class PaperBook:
 
     # ---------- 推进一天 ----------
     def step(self, card: StrategyVersion, day: date) -> NavPoint:
+        # 同一卡同一版本串行推进：调度器与手动补推并发不同日期时，不能基于同一快照各自成交
+        with self._lock(card.card_id, card.version):
+            return self._step_once(card, day)
+
+    def _step_once(self, card: StrategyVersion, day: date) -> NavPoint:
         if card.status not in ("paper", "review", "promoted"):
             raise PaperError(f"{card.ref} 不在模拟中")
         if day > date.today():
@@ -152,7 +164,11 @@ class PaperBook:
             self.store.add_nav(point)
         except DuplicateKeyError:
             return self.store.navs_of(card.card_id, card.version)[-1]
-        self.store.add_trades(trades)
+        try:
+            self.store.add_trades(trades)
+        except Exception:
+            self.store.delete_nav(card.card_id, card.version, day)   # 成交没写上：撤销净值点，重试补齐
+            raise
         return point
 
 

@@ -53,16 +53,27 @@ class StrategyBook:
 
     # ---------- 新建 / 修订 ----------
     def create(self, spec: StrategySpec, actor: str, change_reason: str, card_id: str | None = None) -> StrategyVersion:
-        parent = self.store.get(card_id) if card_id else None
-        if card_id and parent is None:
-            raise StrategyError(f"策略卡 {card_id} 不存在")
         sha = spec_hash(spec)
-        if parent and spec_hash(parent) == sha:
-            raise StrategyError("规则没有变化，不需要新版本")
-        v = StrategyVersion(**spec.model_dump(), card_id=card_id or self.store.next_card_id(),
-                            version=(parent.version + 1) if parent else 1, parent_version=parent.version if parent else None,
-                            change_reason=change_reason, sha256=sha, created_by=actor, created_at=datetime.now(timezone.utc))
-        self.store.insert(v)
+        v = None
+        for _ in range(3):
+            parent = self.store.get(card_id) if card_id else None
+            if card_id and parent is None:
+                raise StrategyError(f"策略卡 {card_id} 不存在")
+            if parent and spec_hash(parent) == sha:
+                raise StrategyError("规则没有变化，不需要新版本")
+            candidate = StrategyVersion(**spec.model_dump(), card_id=card_id or self.store.next_card_id(),
+                                        version=(parent.version + 1) if parent else 1,
+                                        parent_version=parent.version if parent else None,
+                                        change_reason=change_reason, sha256=sha, created_by=actor,
+                                        created_at=datetime.now(timezone.utc))
+            try:
+                self.store.insert(candidate)
+                v = candidate
+                break
+            except DuplicateKeyError:          # 并发分配卡号/版本号：重读最新状态后重试
+                continue
+        if v is None:
+            raise StrategyError("策略卡编号分配冲突，请重试")
         self.store.event("create", actor, v.card_id, v.version, change_reason)
         return v
 
@@ -105,14 +116,35 @@ class StrategyBook:
 
     def approve(self, card_id: str, version: int, actor: str, note: str = "") -> StrategyVersion:
         v = self._get(card_id, version, "review")
+        inc = self.promoted(card_id)
+        if inc is not None and inc.version == v.version:       # 并发双击：后到者不能把刚晋级的版本当旧版本退役
+            raise StrategyError("该版本已经是晋级版本，无需重复批准")
+        # 批准时复跑门控：review 期间仍在推进净值，submit 时的门控快照可能已失效
+        gates = promotion_gates(v, self.store.navs_of(card_id, version), self.store.list_trades(card_id, version),
+                                self.paper.initial_cash, self.cfg,
+                                (inc, self.store.navs_of(card_id, inc.version)) if inc else None)
+        failed = [g.label for g in gates if not g.passed]
+        if failed:
+            self.store.save(v.model_copy(update={"gates": gates}), expect_status="review")
+            raise StrategyError(f"晋级门控在批准时已失效：{'、'.join(failed)}；继续模拟后可重新提交")
         self_approved = any(e["action"] in ("create", "submit") and e["actor"] == actor
                             for e in self.store.list_events(card_id) if e["version"] == version)
-        if inc := self.promoted(card_id):
-            self._move(inc, "retired", "retire", actor, f"被 {v.ref} 取代")
         approvals = v.approvals + [{"actor": actor, "note": note, "self_approved": self_approved,
                                     "at": datetime.now(timezone.utc).isoformat()}]
-        return self._move(v, "promoted", "promote", actor, note or "人工批准晋级", approvals=approvals,
-                          self_approved=self_approved)
+        retired = None
+        if inc is not None:
+            retired = self._move(inc, "retired", "retire", actor, f"被 {v.ref} 取代")   # 保存后的快照（retired）
+        try:
+            return self._move(v, "promoted", "promote", actor, note or "人工批准晋级", approvals=approvals,
+                              self_approved=self_approved, gates=gates, promoted_at=datetime.now(timezone.utc))
+        except Exception:
+            if retired is not None:            # 候选晋级失败：把在用版本恢复回去，避免整张卡没有在用版本
+                try:
+                    self._move(retired, "promoted", "restore", "system",
+                               f"候选 {v.ref} 晋级失败，{retired.ref} 恢复在用")
+                except Exception:
+                    pass
+            raise
 
     def reject(self, card_id: str, version: int, actor: str, reason: str) -> StrategyVersion:
         v = self._get(card_id, version, "draft", "paper", "review")
@@ -124,8 +156,13 @@ class StrategyBook:
         cur = self.promoted(card_id)
         if cur is None:
             raise StrategyError(f"{card_id} 没有已晋级版本")
-        prev = next((v for v in self.store.versions(card_id, ["retired"]) if v.version < cur.version), None)
+        # 上一在用版本按「晋级顺序」判定：乱序批准（先批 v3 再批 v2）后版本号不再等于晋级先后
+        retired = self.store.versions(card_id, ["retired"])
+        prev = max((r for r in retired if r.promoted_at), key=lambda r: r.promoted_at, default=None)
+        if prev is None:                       # 旧数据没有 promoted_at：退回按版本号推断
+            prev = next((r for r in retired if r.version < cur.version), None)
         self._move(cur, "rolled_back", "rollback", actor, reason)
         if prev:
-            return self._move(prev, "promoted", "restore", actor, f"因回滚 {cur.ref} 重新生效")
+            return self._move(prev, "promoted", "restore", actor, f"因回滚 {cur.ref} 重新生效",
+                              promoted_at=datetime.now(timezone.utc))
         return cur.model_copy(update={"status": "rolled_back"})
