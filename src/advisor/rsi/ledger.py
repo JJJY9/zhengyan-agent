@@ -52,6 +52,8 @@ class Ledger:
         db.rsi_issues.create_index("fingerprint", unique=True)
         db.rsi_issues.create_index("id", unique=True)
         db.rsi_protocols.create_index("scenario", unique=True)
+        # 在用版本指针：激活必须是原子的条件更新（CAS），否则并发 release/rollback 会双提升或互相覆盖
+        db.rsi_active.create_index("kind", unique=True)
 
     # ---------- 资产 ----------
     def append_asset(self, kind: AssetKind, content: dict, change_reason: str, created_by: str,
@@ -82,10 +84,42 @@ class Ledger:
         q = {"kind": kind} if kind else {}
         return [Asset.model_validate(d) for d in self.db.rsi_assets.find(q, projection={"_id": 0}).sort("version", ASCENDING)]
 
-    def active_version(self, kind: AssetKind) -> int | None:
+    def _event_active_version(self, kind: AssetKind) -> int | None:
         doc = self.db.rsi_events.find_one({"kind": kind, "action": {"$in": list(ACTIVATING)}},
                                           sort=[("ts", DESCENDING), ("_id", DESCENDING)])
         return doc["active_version"] if doc else None
+
+    def _ensure_active(self, kind: AssetKind) -> dict:
+        """读取指针；历史库没有指针文档时按事件推导并补建（唯一索引兜底并发补建）。"""
+        doc = self.db.rsi_active.find_one({"kind": kind})
+        if doc:
+            return doc
+        v = self._event_active_version(kind)
+        if v is not None:
+            try:
+                self.db.rsi_active.update_one({"kind": kind}, {"$setOnInsert": {"version": v}}, upsert=True)
+            except DuplicateKeyError:
+                pass
+            doc = self.db.rsi_active.find_one({"kind": kind})
+        return doc or {"kind": kind, "version": v}
+
+    def active_version(self, kind: AssetKind) -> int | None:
+        return self._ensure_active(kind)["version"]
+
+    def activate(self, kind: AssetKind, expected: int, new: int) -> bool:
+        """原子地把在用版本从 expected 换到 new；返回是否抢到。
+
+        并发 release / rollback 只有一个能改指针，输的一方拿到 False，必须自行补偿且不改其它文档。
+        """
+        self._ensure_active(kind)
+        if self.db.rsi_active.update_one({"kind": kind, "version": expected}, {"$set": {"version": new}}).matched_count == 1:
+            return True
+        self._ensure_active(kind)               # 指针可能刚被历史补建流程写入：再试一次
+        return self.db.rsi_active.update_one({"kind": kind, "version": expected}, {"$set": {"version": new}}).matched_count == 1
+
+    def delete_asset(self, kind: AssetKind, version: int) -> None:
+        """失败补偿：删除从未激活的孤儿资产（只在 CAS 未成功、确认不是在用版本时调用）。"""
+        self.db.rsi_assets.delete_one({"kind": kind, "version": version})
 
     def active_asset(self, kind: AssetKind) -> Asset | None:
         v = self.active_version(kind)
@@ -107,12 +141,14 @@ class Ledger:
                     pass                                  # 另一个请求抢先把基线写入了
                 else:
                     self.event("bootstrap", actor, kind=kind, active_version=a.version, detail=f"{kind} v1 基线启用")
+                    self._ensure_active(kind)             # 补建在用版本指针（历史库按事件推导）
                     done.append(kind)
                     continue
             latest = self.latest_version(kind)
             if latest is not None and self.active_version(kind) is None:
                 self.event("bootstrap", actor, kind=kind, active_version=latest,
                            detail=f"{kind} v{latest} 基线启用（补记启用事件）")
+                self._ensure_active(kind)
                 done.append(kind)
         return done
 
@@ -168,6 +204,11 @@ class Ledger:
     def list_runs(self, scenario: str | None = None, limit: int = 50) -> list[Run]:
         q = {"scenario": scenario} if scenario else {}
         cur = self.db.rsi_runs.find(q, projection={"_id": 0}).sort("created_at", DESCENDING).limit(limit)
+        return [Run.model_validate(d) for d in cur]
+
+    def runs_of(self, kind: AssetKind, status: str) -> list[Run]:
+        """内部正确性扫描（如发布时归档旧运行）：不得复用带 limit 的列表接口，否则运行多了就漏。"""
+        cur = self.db.rsi_runs.find({"kind": kind, "status": status}, projection={"_id": 0})
         return [Run.model_validate(d) for d in cur]
 
     def tried_directions(self, scenario: str) -> dict[str, str]:
