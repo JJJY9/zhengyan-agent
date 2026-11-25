@@ -142,13 +142,21 @@ def run_expert(deps, p: dict) -> dict:
     shared = [EvidenceCard.model_validate(c) for c in p["shared"].values()]
     own: list[EvidenceCard] = []
     sys_unknowns: list[str] = []
+    # 任务级 RSI 快照优先：运行中发布/回滚不渗入本任务的检索参数与经验卡
+    rsi_search = p.get("rsi_search")
+    if rsi_search is not None:
+        search_cfg = {**deps.policy.search, **rsi_search}
+        hint = rsi_search.get("expert_hints", {}).get(spec.key) or spec.query_hint
+    else:
+        search_cfg = deps.rsi.search() if deps.rsi else deps.policy.search
+        hint = deps.rsi.expert_hint(spec.key, spec.query_hint) if deps.rsi else spec.query_hint
     try:
         if spec.searches and int(budget.limits.get("search_calls", 0)) > 0:
-            hint = deps.rsi.expert_hint(spec.key, spec.query_hint) if deps.rsi else spec.query_hint
             queries = expert_queries(h, spec, hint, p["company"], p["ticker"], p["questions"])[: int(budget.limits["search_calls"])]
             log_notes: list[str] = []
             gathered = gather_web(h, deps, queries, as_of, p["route"],
-                                  max_fetch=int(budget.limits.get("fetch_calls", 0)), log=log_notes.append)
+                                  max_fetch=int(budget.limits.get("fetch_calls", 0)), log=log_notes.append,
+                                  search_cfg=search_cfg if rsi_search is not None else None)
             own, result.queries = gathered.cards, gathered.searched
             # 搜索失败/抓取失败要进入系统缺口，随档案可见；否则深研在检索全挂时仍可能 pass
             sys_unknowns = list(gathered.unknowns)
@@ -157,7 +165,13 @@ def run_expert(deps, p: dict) -> dict:
                     sys_unknowns.append(m)
         view = scope_cards(spec, shared) + [c for c in own if c.level in ("A", "B")] + [c for c in own if c.level == "C"][:6]
         result.seen_evidence = len(view)
-        lessons = deps.rsi.lessons(" ".join(p["questions"]) + " " + " ".join({m.name for c in view for m in c.metrics})) if deps.rsi else []
+        lesson_text = " ".join(p["questions"]) + " " + " ".join({m.name for c in view for m in c.metrics})
+        rsi_lessons = p.get("rsi_lessons")
+        if rsi_lessons is not None:
+            from advisor.rsi import LessonCard, recall
+            lessons = recall([LessonCard.model_validate(c) for c in rsi_lessons], lesson_text)
+        else:
+            lessons = deps.rsi.lessons(lesson_text) if deps.rsi else []
         result.lessons = [f"{c.id} r{c.rev}" for c in lessons]
         draft: ExpertDraft = h.llm(
             role, expert_system(spec),

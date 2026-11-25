@@ -61,6 +61,9 @@ class DeepNodes(Nodes):
         searches = _spread(int(budget.remaining("search_calls")), search_cap)
         fetches = _spread(int(budget.remaining("fetch_calls")), fetch_cap)
         shared = {i: c for i, c in state.get("evidence", {}).items() if c["source_type"] != "web"}
+        snap = state.get("rsi_snapshot") or {}
+        rsi_search = (snap.get("search") or {}).get("content") if snap else None
+        rsi_lessons = (snap.get("lessons") or {}).get("content", {}).get("cards") if snap else None
         sends = []
         for i, (key, qs) in enumerate(members):
             alloc = {
@@ -73,6 +76,7 @@ class DeepNodes(Nodes):
                 "task_id": state["task_id"], "route": state["route"], "as_of": state["as_of"], "ticker": state["ticker"],
                 "company": state.get("company_name", ""), "question": state["question"], "expert": key, "questions": qs,
                 "shared": shared, "allocation": alloc, "started_at": budget.started_at, "paused_s": budget.paused_s,
+                "rsi_search": rsi_search, "rsi_lessons": rsi_lessons,   # 任务级 RSI 快照：专家不实时读在用版本
             }))
         return sends
 
