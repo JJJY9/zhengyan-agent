@@ -2,6 +2,7 @@
 
 只做"选一个标签"：给一段文本和若干单选题，返回每题的概率分布。不生成文字，结果不进入结论或证据。
 """
+import math
 from typing import Any
 
 import httpx
@@ -26,7 +27,23 @@ class DecisionClient:
             r = self._client.post("/v1/systemone", json=body)
             r.raise_for_status()
             data = r.json()
-            answers = {qid: {k: float(v) for k, v in data["answers"][qid]["probabilities"].items()} for qid in questions}
+            answers: dict[str, dict[str, float]] = {}
+            for qid, (_, criteria) in questions.items():
+                raw = data["answers"][qid]["probabilities"]
+                missing = set(criteria) - set(raw)
+                if missing:
+                    raise DecisionError(f"决策模型缺少选项：{sorted(missing)[:3]}")
+                probs = {}
+                for option in criteria:
+                    value = float(raw[option])
+                    if not math.isfinite(value) or value < 0:      # NaN/Infinity/负数不能进入上层比较
+                        raise DecisionError("决策模型返回非法概率（非有限值或负数）")
+                    probs[option] = value
+                if sum(probs.values()) <= 0:
+                    raise DecisionError("决策模型返回全零概率")
+                answers[qid] = probs
+        except DecisionError:
+            raise
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
             raise DecisionError(f"决策模型不可用：{str(e)[:120]}") from e
         meta = {"model": data.get("model", self.model), "latency_ms": data.get("latency_ms")}
