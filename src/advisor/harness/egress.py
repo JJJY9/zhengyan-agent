@@ -15,6 +15,21 @@ class EgressGuard:
     def has_trade_intent(self, text: str) -> bool:
         return any(p.search(text) for p in self._trade)
 
+    def redact_amounts(self, text: str) -> str:
+        """只脱敏命中区间里的数字/账号，保留公司名等上下文（入口识别用；随后仍有常规 redact 兜底）。"""
+        spans = sorted((m.start(), m.end()) for p in self._sensitive for m in p.finditer(text or ""))
+        merged: list[list[int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], end)
+            else:
+                merged.append([start, end])
+        for start, end in reversed(merged):
+            chunk = text[start:end]
+            masked = re.sub(r"\d+(?:\.\d+)?\s*(?:万|千|元|股|手)?", "[已脱敏]", chunk)
+            text = text[:start] + (masked if masked != chunk else "[已脱敏]") + text[end:]
+        return text
+
     def check_outbound(self, text: str) -> None:
         if self.find_sensitive(text):
             raise HarnessDenied("出域内容含个人敏感信息，已阻断")
