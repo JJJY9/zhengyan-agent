@@ -45,7 +45,8 @@ class Services:
                 continue
             sub = self.watch.store.get_sub(d.ticker)
             alerts = [(a.id, "、".join(e.title for e in a.events)) for a in self.watch.store.list_alerts(d.ticker, "open")]
-            if hit := profile_impact(d, repo.get_evidence(d.evidence_ids), prev, v, bool(sub and sub.active), alerts):
+            if hit := profile_impact(d, repo.get_evidence(d.evidence_ids), prev, v, bool(sub and sub.active), alerts,
+                                     sub.last_scan_note if sub else ""):
                 impact.append(hit)
         self.profiles.set_impact(v.version, impact)
         v.impact = impact

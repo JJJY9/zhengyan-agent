@@ -6,13 +6,16 @@
 增量复核：带着受影响的结论发起一次标准研究，生成新版本，并在报告里逐条复核旧结论。
 """
 import hashlib
+import json
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
 from advisor.contracts import Dossier, EvidenceCard, ResearchRequest
 from advisor.evidence import fact_value, metric_facts, report_periods
 from advisor.graph.deps import Deps
 from advisor.harness import Budget, BudgetExceeded, HarnessDenied, SkillFailed
+from advisor.skills.compute.finance import normalize_period
 from advisor.watch.models import EVENT_LABEL, AffectedClaim, Alert, WatchEvent
 from advisor.watch.store import WatchStore
 
@@ -22,6 +25,27 @@ TRIGGER_WORDS = {
     "price_move": ("股价", "价格", "估值", "PE", "市盈率", "回撤", "下跌", "上涨"),
 }
 PRICE_SOURCES = ("market.daily", "valuation.snapshot")
+ANNOUNCE_WINDOWS = 5              # 公告回看最多 5×400 天，覆盖大多数档案时点，避免窗口滑动重复提醒
+
+
+def _norm_period(period: str) -> str:
+    """报告期归一（兼容 YYYYMMDD），与 compute/ttm 的口径一致。"""
+    return normalize_period(period) or str(period)[:10]
+
+
+def _rebase_close(repo, card: EvidenceCard, day: str) -> Decimal | None:
+    """今日行情卡的原始行里，档案交易日的复权收盘价：同一复权基准才能比较。"""
+    try:
+        rows = json.loads(repo.get_snapshot(card.snapshot_hash) or "")
+    except (TypeError, ValueError):
+        return None
+    for r in rows:
+        if str(r.get("date"))[:10] == day and r.get("close") is not None:
+            try:
+                return Decimal(str(r["close"]))
+            except (InvalidOperation, ValueError):
+                return None
+    return None
 
 
 class WatchError(ValueError):
@@ -41,6 +65,7 @@ class Watcher:
         d = repo.get_dossier(ticker)
         if d is None:
             raise WatchError(f"{ticker} 还没有档案，先做一次研究再订阅")
+        self._supersede_open_alerts(d)          # 新版本已覆盖的旧提醒自动关闭，避免同批提醒长期 open
         sub = self.store.get_sub(ticker)
         threshold = sub.price_move_pct if sub else 10
         evidence = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}
@@ -72,7 +97,15 @@ class Watcher:
         self.store.mark_scanned(ticker, alert_summary(alert, created))
         return alert
 
+    def _supersede_open_alerts(self, d: Dossier) -> None:
+        """档案已有新版本：旧版本触发的待处理提醒自动关闭（复核完成后 open_alerts 能清零）。"""
+        for a in self.store.list_alerts(d.ticker, "open"):
+            if a.dossier_version < d.version:
+                self.store.update_alert(a.id, status="dismissed",
+                                        note=f"已有新版本 v{d.version}，旧提醒自动关闭")
+
     def scan_all(self, today: date | None = None, log=lambda m: None) -> list[Alert]:
+        self.sync()                             # 定时/CLI 扫描也回写复核结果（不再只在打开网页时同步）
         out = []
         for sub in self.store.list_subs():
             try:
@@ -87,22 +120,37 @@ class Watcher:
 
     def _new_report(self, h, d: Dossier, evidence: dict[str, EvidenceCard], today: date, _):
         st = h.call("financials.statements", code=d.ticker, as_of=today, periods=5)
-        latest_new = max((m.period[:10] for c in st.cards for m in c.metrics), default="")
-        latest_old = max(report_periods(d.evidence_ids, evidence), default="")
+        latest_new = max((_norm_period(m.period) for c in st.cards for m in c.metrics), default="")
+        latest_old = max((_norm_period(p) for p in report_periods(d.evidence_ids, evidence)), default="")
         if not latest_old or latest_new <= latest_old:
             return None
-        card = next(c for c in st.cards if any(m.period[:10] == latest_new for m in c.metrics))
-        claims = [AffectedClaim(claim_id=c.id, text=c.text, reason=f"依赖的报告期 {max(p)} 已有更新的 {latest_new}")
+        card = next(c for c in st.cards if any(_norm_period(m.period) == latest_new for m in c.metrics))
+        claims = [AffectedClaim(claim_id=c.id, text=c.text, reason=f"依赖的报告期 {max(_norm_period(x) for x in p)} 已有更新的 {latest_new}")
                   for c in d.claims if c.status == "verified" and (p := report_periods(c.evidence_ids, evidence))
-                  and max(p) < latest_new]
+                  and max(_norm_period(x) for x in p) < latest_new]
         event = WatchEvent(kind="new_report", title=f"{latest_new} 报告期财报已披露", date=card.published_at.date().isoformat()
                            if card.published_at else None, detail=f"档案用的是 {latest_old}", evidence_ids=[card.id])
         return event, claims, [card]
 
     def _announcements(self, h, d: Dossier, evidence, today: date, _):
-        days = min(max((today - d.as_of).days, 7), 400)
-        out = h.call("announcements.list", code=d.ticker, as_of=today, lookback_days=days)
-        new = [c for c in out.cards if c.published_at and c.published_at.date() > d.as_of]
+        """新公告以「是否已进入档案证据」判定：与 as_of 同日、但研究之后发布的公告也能提醒。"""
+        known = {c.id for c in evidence.values() if c.source_type == "announcement"} | \
+                {c.origin_id for c in evidence.values() if c.source_type == "announcement"}
+        found: dict[str, EvidenceCard] = {}
+        cursor = today
+        for _ in range(ANNOUNCE_WINDOWS):
+            days = min(max((cursor - d.as_of).days, 7), 400)
+            out = h.call("announcements.list", code=d.ticker, as_of=cursor, lookback_days=days)
+            for c in out.cards:
+                if not c.published_at or c.published_at.date() < d.as_of:
+                    continue
+                if c.id in known or (c.origin_id and c.origin_id in known):
+                    continue
+                found[c.origin_id or c.id] = c
+            if (cursor - d.as_of).days <= 400:
+                break
+            cursor = cursor - timedelta(days=400)
+        new = sorted(found.values(), key=lambda c: c.published_at)
         if not new:
             return None
         titles = "；".join(c.title for c in new[:3])
@@ -111,19 +159,32 @@ class Watcher:
         return event, [], new
 
     def _price_move(self, h, d: Dossier, evidence, today: date, threshold: float):
-        old = fact_value(metric_facts([c for c in evidence.values() if c.skill == "market.daily"]), "close")
-        out = h.call("market.daily", code=d.ticker, as_of=today)
-        new = fact_value(metric_facts(out.cards), "close")
-        if not old or new is None:
+        old_metric = next((m for c in evidence.values() if c.skill == "market.daily"
+                           for m in c.metrics if m.field == "close"), None)
+        if old_metric is None:
             return None
-        pct = float((new / old - 1) * 100)
+        old_day = str(old_metric.period)[:10]
+        try:
+            lookback = min(max((today - date.fromisoformat(old_day)).days + 5, 30), 800)
+        except ValueError:
+            return None
+        out = h.call("market.daily", code=d.ticker, as_of=today, lookback_days=lookback)
+        new = fact_value(metric_facts(out.cards), "close")
+        if new is None:
+            return None
+        # 除权除息后前复权序列会整体重算：用今日序列里档案交易日的复权价做基准，而不是档案里存的历史基准
+        base = _rebase_close(self.deps.repo, out.cards[0], old_day)
+        if base is None or base <= 0:
+            return None                          # 无法对齐复权基准：宁可本次不报，也不制造假异动
+        pct = float((new / base - 1) * 100)
         if abs(pct) < threshold:
             return None
         claims = [AffectedClaim(claim_id=c.id, text=c.text, reason=f"依赖档案时点的行情/估值，价格已变化 {pct:+.1f}%")
                   for c in d.claims if c.status == "verified"
                   and any((e := evidence.get(i)) and e.skill in PRICE_SOURCES for i in c.evidence_ids)]
-        event = WatchEvent(kind="price_move", title=f"价格较档案时点变化 {pct:+.1f}%", date=out.cards[0].metrics[0].period[:10],
-                           detail=f"{old} → {new}（阈值 ±{threshold:g}%）", evidence_ids=[out.cards[0].id])
+        event = WatchEvent(kind="price_move", title=f"价格较档案时点变化 {pct:+.1f}%",
+                           date=str(out.cards[0].metrics[0].period)[:10],
+                           detail=f"{base} → {new}（同一复权基准，阈值 ±{threshold:g}%）", evidence_ids=[out.cards[0].id])
         return event, claims, out.cards
 
     @staticmethod
@@ -155,17 +216,28 @@ class Watcher:
         except Exception:
             self.store.update_alert(alert_id, status="open")   # 起任务失败：把提醒放回待处理，允许重试
             raise
-        self.store.update_alert(alert_id, review_task_id=task_id)
+        try:
+            self.store.update_alert(alert_id, review_task_id=task_id)
+        except Exception:                       # 任务已启动但状态写入失败：放回待处理，sync 也会兜底
+            self.store.update_alert(alert_id, status="open", review_task_id=None,
+                                    note="复核已启动但状态写入失败，可重新发起复核")
         return task_id
 
     def dismiss(self, alert_id: str, note: str) -> None:
+        alert = self.store.get_alert(alert_id)
+        if alert is None:
+            raise WatchError("提醒不存在")
+        if alert.status != "open":              # 复核中/已完成的提醒不能被忽略，否则新版本会与提醒失联
+            raise WatchError("只有待处理的提醒可以忽略")
         self.store.update_alert(alert_id, status="dismissed", note=note)
 
     def sync(self) -> None:
         """复核任务结束后回写提醒状态。"""
         for a in self.store.list_alerts(status="reviewing"):
             task = self.deps.repo.get_task(a.review_task_id or "")
-            if not task:
+            if not task:                        # 任务缺失/编号没写上：放回待处理，避免永久卡死
+                self.store.update_alert(a.id, status="open", review_task_id=None,
+                                        note="复核任务缺失或已清理，请重新发起复核")
                 continue
             if task["status"] == "done":
                 self.store.update_alert(a.id, status="resolved", resolved_version=(task.get("result") or {}).get("version"))
@@ -181,5 +253,8 @@ def alert_summary(alert: Alert, created: bool | None = None) -> str:
 
 
 def _fingerprint(d: Dossier, events: list[WatchEvent]) -> str:
-    parts = [d.key, str(d.version)] + sorted(f"{e.kind}|{e.title}|{e.date}" for e in events)
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:24]
+    """同一批变化只提醒一次：价格异动按「档案版本+异动」计，不随每日 bar/pct 变化。"""
+    parts = [d.key, str(d.version)]
+    for e in events:
+        parts.append("price_move" if e.kind == "price_move" else f"{e.kind}|{e.title}|{e.date}")
+    return hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()[:24]

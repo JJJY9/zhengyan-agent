@@ -67,5 +67,6 @@ def review(alert_id: str, svc: Svc):
 def dismiss(alert_id: str, body: DismissIn, svc: Svc):
     if svc.watch.store.get_alert(alert_id) is None:
         raise HTTPException(404, "提醒不存在")
-    svc.watch.dismiss(alert_id, body.note)
+    with conflict_on(WatchError):
+        svc.watch.dismiss(alert_id, body.note)
     return {"ok": True}
