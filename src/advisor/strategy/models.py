@@ -69,6 +69,7 @@ class StrategyVersion(StrategySpec):
     created_by: str
     created_at: datetime
     paper_start: date | None = None
+    promoted_at: datetime | None = None       # 晋级时间：回滚按晋级顺序恢复上一在用版本
     gates: list[GateResult] = Field(default_factory=list)
     approvals: list[dict] = Field(default_factory=list)
     reject_reason: str = ""

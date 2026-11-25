@@ -1,6 +1,7 @@
 """策略卡、模拟成交与净值的存储。版本只追加；成交与净值只追加；状态变化写事件。"""
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 
 from pymongo import ASCENDING, DESCENDING
@@ -32,8 +33,9 @@ class StrategyStore:
 
     # ---------- 版本 ----------
     def next_card_id(self) -> str:
-        ids = self.cards.distinct("card_id")
-        return f"SC-{len(ids) + 1:03d}"
+        nums = [int(m.group(1)) for cid in self.cards.distinct("card_id")
+                if (m := re.match(r"^SC-(\d+)$", cid))]
+        return f"SC-{max(nums, default=0) + 1:03d}"
 
     def insert(self, v: StrategyVersion) -> None:
         self.cards.insert_one(v.model_dump(mode="json"))
@@ -43,7 +45,7 @@ class StrategyStore:
 
         expect_status 给定时以「状态未变」做乐观锁，返回是否写入成功（并发操作不会互相覆盖）。
         """
-        fields = v.model_dump(mode="json", include={"status", "paper_start", "gates", "approvals", "reject_reason"})
+        fields = v.model_dump(mode="json", include={"status", "paper_start", "promoted_at", "gates", "approvals", "reject_reason"})
         q: dict = {"card_id": v.card_id, "version": v.version, "sha256": v.sha256}
         if expect_status is not None:
             q["status"] = expect_status
@@ -75,6 +77,10 @@ class StrategyStore:
 
     def add_nav(self, p: NavPoint) -> None:
         self.navs.insert_one(p.model_dump(mode="json"))
+
+    def delete_nav(self, card_id: str, version: int, day) -> None:
+        """成交写入失败时撤销当天净值点，让重试能重新生成净值与成交。"""
+        self.navs.delete_one({"card_id": card_id, "version": version, "date": day.isoformat()})
 
     def navs_of(self, card_id: str, version: int) -> list[NavPoint]:
         cur = self.navs.find({"card_id": card_id, "version": version}, projection={"_id": 0}).sort("date", ASCENDING)
