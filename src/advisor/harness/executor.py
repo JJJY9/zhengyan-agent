@@ -78,6 +78,7 @@ class Harness:
         decision: Any = None,
         cache: dict | None = None,
         flight: dict | None = None,
+        charge_sink: Callable[[str, float], None] | None = None,
     ):
         self.policy = policy
         self.registry = registry
@@ -86,6 +87,7 @@ class Harness:
         self.ctx = ctx
         self.llm_client = llm
         self.decision_client = decision
+        self._charge_sink = charge_sink
         self.egress = EgressGuard(
             policy.egress.get("sensitive_patterns", []),
             policy.egress.get("trade_intent_patterns", []),
@@ -94,6 +96,12 @@ class Harness:
         self._cache: dict[str, BaseModel] = cache if cache is not None else {}
         # 在途占位（与 _cache 同生命周期）：并发的同参调用只执行一次，其余等待复用结果
         self._flight: dict[str, threading.Event] = flight if flight is not None else {}
+
+    def _charge(self, kind: str, amount: float = 1) -> None:
+        """本地计费 + 任务级持久账本：节点被审批中断不会返回，账目不能只活在节点局部对象里。"""
+        self.budget.charge(kind, amount)
+        if self._charge_sink is not None:
+            self._charge_sink(kind, amount)
 
     def _base_record(self, kind: str, name: str) -> dict:
         return {"task_id": self.ctx.task_id, "kind": kind, "name": name, "route": self.ctx.route,
@@ -107,6 +115,7 @@ class Harness:
     def call(self, name: str, /, **args: Any) -> BaseModel:
         started = time.time()
         record = self._base_record("skill", name)
+        attempts: list[dict] = []
         with span(f"skill:{name}", task_id=self.ctx.task_id, node=self.ctx.node, principal=self.ctx.principal) as ids:
             record.update(ids)
             try:
@@ -133,7 +142,7 @@ class Harness:
                         record["status"] = "cache_hit"
                         return self._cache[key]
                 try:
-                    out = self._run_with_retry(skill, inp)          # 预算检查与计费在每次真实调用时进行
+                    out = self._run_with_retry(skill, inp, attempts)  # 预算检查与计费在每次真实调用时进行
                     if not isinstance(out, skill.spec.output_model):
                         raise HarnessDenied(f"{name} 输出不符合契约")
                     self._cache[key] = out
@@ -153,6 +162,8 @@ class Harness:
                 raise
             finally:
                 record["duration_ms"] = int((time.time() - started) * 1000)
+                if attempts and (len(attempts) > 1 or attempts[0].get("status") != "ok"):
+                    record["attempts"] = attempts    # 重试的每一次真实外呼都要能对账，首败原因不能只活在最终错误里
                 self.audit(record)
 
     def _admit(self, name: str):
@@ -198,21 +209,30 @@ class Harness:
         except Exception as e:  # 安全检查自身出错：默认阻断
             raise HarnessDenied(f"前置检查不可用，默认阻断: {e}") from e
 
-    def _run_with_retry(self, skill, inp: BaseModel) -> BaseModel:
+    def _run_with_retry(self, skill, inp: BaseModel, attempts: list[dict]) -> BaseModel:
         last: Exception | None = None
         for attempt in range(MAX_RETRIES + 1):
             if skill.spec.budget_kind:
                 self.budget.check(skill.spec.budget_kind)      # 每次真实调用前重新检查
-                self.budget.charge(skill.spec.budget_kind)     # 每次真实调用都计费：重试不是免费的
+                self._charge(skill.spec.budget_kind)           # 每次真实调用都计费：重试不是免费的
+            t0 = time.time()
             try:
-                return _call_with_timeout(lambda: skill.run(inp), skill.spec.timeout_s)
+                out = _call_with_timeout(lambda: skill.run(inp), skill.spec.timeout_s)
+                attempts.append({"n": attempt + 1, "status": "ok", "duration_ms": int((time.time() - t0) * 1000)})
+                return out
             except _SkillTimeout:
                 last = SkillFailed(f"{skill.spec.name} 超时（{skill.spec.timeout_s}s）", retryable=True)
+                attempts.append({"n": attempt + 1, "status": "timeout", "error": str(last),
+                                 "duration_ms": int((time.time() - t0) * 1000)})
             except SkillFailed as e:
                 last = e
+                attempts.append({"n": attempt + 1, "status": "failed", "error": str(e)[:200],
+                                 "duration_ms": int((time.time() - t0) * 1000)})
             except Exception as e:
                 retry = isinstance(e, skill.spec.retryable)
                 last = SkillFailed(f"{skill.spec.name} 失败: {e}", retryable=retry)
+                attempts.append({"n": attempt + 1, "status": "failed", "error": str(e)[:200],
+                                 "duration_ms": int((time.time() - t0) * 1000)})
             if not getattr(last, "retryable", False) or attempt == MAX_RETRIES:
                 break
             self.check_cancelled()
@@ -232,7 +252,7 @@ class Harness:
         """模型调用同样受撤销、预算、脱敏、超时与审计约束。"""
         started = time.time()
         record = {**self._base_record("llm", purpose), "role": role}
-        timeout_s, wall_left = LLM_TIMEOUT_CAP_S, self.budget.remaining("wall_clock_s")
+        timeout_s, wall_left = LLM_TIMEOUT_CAP_S, self.budget.wall_left()
         with span(f"llm:{purpose}", task_id=self.ctx.task_id, node=self.ctx.node, role=role) as ids:
             record.update(ids)
             try:
@@ -249,7 +269,7 @@ class Harness:
                                                  schema=schema, max_tokens=cap),
                     timeout_s,
                 )
-                self.budget.charge("tokens", usage)
+                self._charge("tokens", usage)
                 record.update(tokens=usage)
                 self.budget.check()                 # 调用返回后复查总时限：超时产生的结论不再提交
                 record.update(status="ok")
@@ -261,7 +281,7 @@ class Harness:
                 # 模型侧可能已经花掉 token（修复重试失败/API 中断）：按真实消耗计费并写审计
                 spent = int(getattr(e, "tokens", 0) or getattr(e, "advisor_tokens", 0) or 0)
                 if spent:
-                    self.budget.charge("tokens", spent)
+                    self._charge("tokens", spent)
                     record["tokens"] = spent
                 record.update(status=type(e).__name__, error=str(e)[:300])
                 raise

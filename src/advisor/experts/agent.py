@@ -135,7 +135,7 @@ def run_expert(deps, p: dict) -> dict:
     role = cfg.get("roles", {}).get(spec.key, "draft")
     as_of = date.fromisoformat(p["as_of"])
     started = time.time()
-    budget = Budget(limits=p["allocation"], started_at=p["started_at"])
+    budget = Budget(limits=p["allocation"], started_at=p["started_at"], paused_s=float(p.get("paused_s", 0.0)))
     h = deps.harness(p["task_id"], p["route"], as_of, budget, node=f"expert:{spec.key}", principal=spec.key,
                      task_scoped_cache=True)
     result = ExpertResult(expert=spec.key, name=spec.name, model_role=role, brief=p["questions"])

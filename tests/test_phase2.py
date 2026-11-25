@@ -432,7 +432,7 @@ def test_abstain_with_high_stakes_escalates_deep():
 
 
 def test_resume_after_long_wait_rebases_budget_clock(repo, policy):
-    """审批/停机等待不应吃掉执行时限：恢复后还要跑取数，恢复时预算时钟须顺延暂停时长。"""
+    """审批/停机等待不应吃掉执行时限；暂停时长记任务账本，恢复不能重写暂停中的检查点。"""
     svc = make_service(repo, policy)
     tid, task = run(svc, question=f"我的持仓有 30万元 {CODE}，要不要卖？")
     assert task["status"] == "waiting_approval" and task["interrupt"]["type"] == "consent"
@@ -440,11 +440,15 @@ def test_resume_after_long_wait_rebases_budget_clock(repo, policy):
     budget = dict(svc.graph.get_state(config).values["budget"])
     budget["started_at"] = time.time() - 1000                  # 模拟已执行 1000s（standard 上限 900s）
     svc.graph.update_state(config, {"budget": budget})
+    started_before = svc.graph.get_state(config).values["budget"]["started_at"]
     ticket = repo.get_task(tid)["interrupt"]
     repo.update_task(tid, interrupt={**ticket, "issued_at": time.time() - 800})   # 其中 800s 在等审批
     svc.resume(tid, approve=True, background=False)
     t = repo.get_task(tid)
     assert t["status"] == "done", t
+    assert repo.task_paused_s(tid) >= 799                       # 暂停时长记在任务级账本
+    # 恢复不再对暂停中的图做 update_state：那会重写检查点、让后续审批投递错位
+    assert svc.graph.get_state(config).values["budget"]["started_at"] == started_before
 
 
 def test_resume_is_single_flight(repo, policy, monkeypatch):

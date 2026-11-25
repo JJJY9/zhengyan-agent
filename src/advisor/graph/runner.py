@@ -80,30 +80,36 @@ class ResearchService:
             # 否则同一 thread 会被提交两次 Command(resume)，主席与提交节点重放、生成两份档案
             if not self.deps.repo.try_resume_task(task_id):
                 raise ValueError("任务已被另一次恢复操作接管")
-            # 审批等待（含停机）不计入执行时限：把预算时钟顺延暂停时长
+            # 审批等待（含停机）不计入执行时限：暂停时长记进任务账本，预算检查按开始时间扣除；
+            # 不对暂停中的图做 update_state——那会重写检查点、破坏中断的 resume 重放顺序
             issued = float(ticket.get("issued_at") or 0)
             if issued:
-                self._rebase_paused_clock(task_id, max(time.time() - issued, 0.0))
+                self.deps.repo.add_paused_time(task_id, max(time.time() - issued, 0.0))
             self.deps.repo.push_event(task_id, "approval", f"{'同意' if approve else '拒绝'}{('（' + reason + '）') if reason else ''}")
-            self._submit(task_id, Command(resume={**ticket, "approve": approve, "reason": reason}), background)
+            decision = {**ticket, "approve": approve, "reason": reason}
+            self._submit(task_id, Command(resume=self._resume_payload(task_id, ticket, decision)), background)
         except Exception:
             self._release()          # 提交没成功：把名额还回去
             raise
 
-    def _rebase_paused_clock(self, task_id: str, pause_s: float) -> None:
-        """把检查点里的预算 started_at 顺延暂停时长：恢复后的时限只统计实际执行时间。"""
-        if pause_s <= 0:
-            return
+    def _resume_payload(self, task_id: str, ticket: dict, decision: dict) -> dict:
+        """恢复值按 interrupt id 定向投递。
+
+        深研多个专家同时停在审批上时，裸值恢复会被已重放的错误任务抢走（甚至直接报错要求按 id 恢复）；
+        以当前检查点里的待审批中断为准定向，票据里的 id 过期时退回按参数指纹匹配、再退回唯一待审批。
+        """
         config = {"configurable": {"thread_id": task_id}, "recursion_limit": 60}
         try:
-            budget = (self.graph.get_state(config).values or {}).get("budget")
-            if not budget:
-                return
-            budget = dict(budget)
-            budget["started_at"] = float(budget.get("started_at", time.time())) + pause_s
-            self.graph.update_state(config, {"budget": budget})
-        except Exception as e:  # 顺延失败不应阻止恢复，但要记录
-            self.deps.repo.push_event(task_id, "runner", f"预算时钟顺延失败：{type(e).__name__}: {e}")
+            pending = [i for t in self.graph.get_state(config).tasks for i in t.interrupts]
+        except Exception:
+            pending = []
+        target = next((i for i in pending if i.id == ticket.get("interrupt_id")), None)
+        if target is None and ticket.get("args_hash"):
+            target = next((i for i in pending
+                           if isinstance(i.value, dict) and i.value.get("args_hash") == ticket.get("args_hash")), None)
+        if target is None and len(pending) == 1:
+            target = pending[0]
+        return {target.id: decision} if target is not None else decision
 
     def cancel(self, task_id: str) -> str | None:
         status = self.deps.repo.request_cancel(task_id)
@@ -137,7 +143,9 @@ class ResearchService:
             snapshot = self.graph.get_state(config)
             pending = [i for t in snapshot.tasks for i in t.interrupts]
             if pending:
-                repo.update_task(task_id, status="waiting_approval", interrupt={**pending[0].value, "issued_at": time.time()})
+                # 存下 interrupt id：恢复时按 id 定向投递，深研多专家并行待审批时裸值会送错任务
+                repo.update_task(task_id, status="waiting_approval",
+                                 interrupt={**pending[0].value, "issued_at": time.time(), "interrupt_id": pending[0].id})
                 return
             status = result.get("status", "done")
             repo.update_task(
