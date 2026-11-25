@@ -20,13 +20,17 @@ class GatherResult:
 
 
 def gather_web(h, deps, queries: list[str], as_of: date, route: str, max_fetch: int,
-               log: Callable[[str], None] = lambda m: None) -> GatherResult:
-    cfg = deps.rsi.search() if deps.rsi else deps.policy.search
+               log: Callable[[str], None] = lambda m: None, search_cfg: dict | None = None) -> GatherResult:
+    """search_cfg 给定时（任务级 RSI 快照）检索参数与追加站点都按它来，不再实时读在用版本。"""
+    cfg = search_cfg if search_cfg is not None else (deps.rsi.search() if deps.rsi else deps.policy.search)
+    pin = {"rerank_min": float(cfg["rerank_min"]) if "rerank_min" in cfg else None,
+           "site_allow_add": [s for s in cfg.get("fetch_allow_add") or []]} if search_cfg is not None else {}
     res = GatherResult()
     hits: list[SearchHit] = []
     for q in queries:
         try:
-            out = h.call("web.search", query=q, as_of=as_of, count=10, lookback_days=int(cfg.get("lookback_days", 120)))
+            out = h.call("web.search", query=q, as_of=as_of, count=10,
+                         lookback_days=int(cfg.get("lookback_days", 120)), **pin)
             hits.extend(out.hits)
             res.searched.append(q)
         except BudgetExceeded as e:
@@ -66,9 +70,10 @@ def gather_web(h, deps, queries: list[str], as_of: date, route: str, max_fetch: 
         if can_fetch and hit.authority >= b_min and hit.date is not None and host_matches(hit.url, allow)
     ][:max_fetch]
     fetched: dict[str, str] = {}
+    fetch_pin = {"site_allow_add": pin["site_allow_add"]} if search_cfg is not None else {}
     for hit in to_fetch:
         try:
-            fetched[hit.url] = h.call("web.fetch", url=hit.url).content
+            fetched[hit.url] = h.call("web.fetch", url=hit.url, **fetch_pin).content
         except BudgetExceeded:
             break
         except (SkillFailed, HarnessDenied) as e:

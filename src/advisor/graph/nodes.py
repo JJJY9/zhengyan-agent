@@ -15,7 +15,7 @@ from advisor.graph.state import ResearchState
 from advisor.harness import Budget, BudgetExceeded, HarnessDenied, SkillFailed, TaskCancelled
 from advisor.harness.egress import EgressGuard
 from advisor.routing import decide_route, should_escalate
-from advisor.rsi import render_lessons
+from advisor.rsi import LessonCard, recall, render_lessons
 from advisor.skills.research.earnings_review import (
     DRAFT_SYSTEM, INTAKE_SYSTEM, INTENT_QUESTIONS, QUERY_SYSTEM, DraftOutput, IntakeOut, QueryPlan, derive_metrics,
     draft_user_prompt,
@@ -76,6 +76,23 @@ class Nodes:
         )
 
     # ---------- 工具 ----------
+    def _rsi_snapshot(self, state: ResearchState) -> dict:
+        return state.get("rsi_snapshot") or {}
+
+    def _lessons(self, state: ResearchState, text: str) -> list:
+        """经验卡召回：任务内只用 route 时点的快照，运行中发布不影响本任务。"""
+        snap = self._rsi_snapshot(state).get("lessons")
+        if snap is not None:
+            cards = [LessonCard.model_validate(c) for c in snap.get("content", {}).get("cards", [])]
+            return recall(cards, text)
+        return self.d.rsi.lessons(text) if self.d.rsi else []
+
+    def _search_cfg(self, state: ResearchState) -> dict:
+        """检索参数：同样只读快照（rerank_min/权威阈值/追加站点/专家侧重）。"""
+        snap = self._rsi_snapshot(state).get("search")
+        if snap is not None:
+            return {**self.d.policy.search, **snap.get("content", {})}
+        return self.d.rsi.search() if self.d.rsi else dict(self.d.policy.search)
     def _h(self, state: ResearchState, node: str):
         budget = Budget.from_dict(state["budget"])
         # 任务级账本：节点被审批中断时不会返回它算出的预算，计费只落在这里才不会丢；
@@ -179,7 +196,9 @@ class Nodes:
     # ---------- L1：双轴路由（任务轴 + 模型轴） ----------
     def route(self, state: ResearchState) -> dict:
         h, budget = self._h(state, "route")
-        cfg = self.d.rsi.routing(self.d.policy.routing) if self.d.rsi else self.d.policy.routing
+        # 任务开始时一次性取 RSI 各组件快照：路由参数、经验卡、检索模板此后都只读快照
+        snap = self.d.rsi.snapshot() if self.d.rsi else {}
+        cfg = {**self.d.policy.routing, **snap.get("routing", {}).get("content", {})} if snap else self.d.policy.routing
         decision = decide_route(h, state["question"], state.get("intent", "research"),
                                 state.get("route_requested", "auto"), cfg)
         rp = self.d.policy.route(decision.route)
@@ -189,7 +208,9 @@ class Nodes:
         self._event(state, "route", f"采用「{ROUTE_LABEL[decision.route]}」{'（' + how + '）' if how else ''}，"
                                     f"使用{ROLE_LABEL.get(rp.llm_role, rp.llm_role)}")
         return {"route": decision.route, "routing": decision.model_dump(mode="json"), "budget": budget.to_dict(),
-                "rsi_versions": self.d.rsi.versions() if self.d.rsi else {}}   # 任务开始时的方法版本快照
+                "rsi_snapshot": snap,
+                "rsi_versions": {k: v.get("version") for k, v in snap.items()} if snap
+                else (self.d.rsi.versions() if self.d.rsi else {})}   # 任务开始时的方法版本快照
 
     # ---------- 计划 ----------
     def plan(self, state: ResearchState) -> dict:
@@ -284,7 +305,7 @@ class Nodes:
         h, budget = self._h(state, "search")
         res = gather_web(h, self.d, state.get("queries", []), date.fromisoformat(state["as_of"]), state["route"],
                          max_fetch=int(self.d.policy.search.get("max_fetch_per_round", 4)),
-                         log=lambda m: self._event(state, "search", m))
+                         log=lambda m: self._event(state, "search", m), search_cfg=self._search_cfg(state))
         nb = sum(c.level == "B" for c in res.cards)
         self._event(state, "search", f"搜索 {len(res.searched)} 次，{res.hits} 条结果，合并转载后 {res.clusters} 件事；"
                                      f"读取原文 {res.fetched} 篇，可信来源 {nb} 条、仅作线索 {len(res.cards) - nb} 条")
@@ -301,7 +322,7 @@ class Nodes:
         context = (statements + _cards(state, state.get("calc_ids", [])) + _cards(state, state.get("market_ids", []))
                    + _cards(state, state.get("announcement_ids", []))[:15] + web)
         role = self.d.policy.route(state["route"]).llm_role
-        lessons = self.d.rsi.lessons(lesson_query(state["question"], context)) if self.d.rsi else []
+        lessons = self._lessons(state, lesson_query(state["question"], context))
         if lessons:
             self._event(state, "draft", f"参考了 {len(lessons)} 条以往经验（{', '.join(c.id for c in lessons)}），只作方法提示，不作为证据")
         try:

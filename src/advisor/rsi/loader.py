@@ -69,3 +69,12 @@ class RSILoader:
 
     def versions(self) -> dict[str, int | None]:
         return {k: self._active(k)[0] for k in ("lessons", "routing", "search")}
+
+    def snapshot(self) -> dict[str, dict]:
+        """任务级快照：route 节点一次性取各组件 (版本, 内容)，任务内消费一律只读快照。
+
+        运行中发布/回滚会清缓存或 5s 后生效：若读取仍走实时接口，档案里记录的方法版本
+        与实际注入的经验卡/检索参数就不是同一版（核验实测：档案记 v1、注入只存在于 v2 的卡）。
+        """
+        return {k: {"version": v, "content": content} for k, (v, content) in
+                ((k, self._active(k)) for k in ("lessons", "routing", "search"))}

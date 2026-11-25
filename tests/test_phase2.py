@@ -478,11 +478,11 @@ def test_rsi_versions_snapshotted_at_task_start(repo, policy):
 
     svc = make_service(repo, policy, LLM())
     loader = svc.deps.rsi
-    orig = loader.versions
-    loader.versions = lambda: {k: holder["v"] for k in ("lessons", "routing", "search")}
+    orig = loader.snapshot
+    loader.snapshot = lambda: {k: {"version": holder["v"], "content": {}} for k in ("lessons", "routing", "search")}
     try:
         run(svc)
     finally:
-        loader.versions = orig
+        loader.snapshot = orig
     d = repo.get_dossier(CODE)
     assert d.rsi_versions == {"lessons": 1, "routing": 1, "search": 1}

@@ -78,6 +78,8 @@ class SearchIn(BaseModel):
     as_of: date
     count: int = Field(default=10, ge=1, le=20)
     lookback_days: int = Field(default=120, ge=1, le=730)
+    rerank_min: float | None = None          # 任务级 RSI 快照固定值；None = 实时读在用版本
+    site_allow_add: list[str] | None = None  # 同上：快照固定追加的抓取站点
 
 
 class SearchOut(BaseModel):
@@ -88,6 +90,7 @@ class SearchOut(BaseModel):
 
 class FetchIn(BaseModel):
     url: str = Field(max_length=2000, pattern=r"^https?://")
+    site_allow_add: list[str] | None = None  # 任务级快照固定的追加站点；None = 实时读在用版本
 
 
 class FetchOut(BaseModel):
@@ -121,7 +124,7 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
     ttl = float(policy.search.get("cache_ttl_hours", 24))
 
     def search(inp: SearchIn) -> SearchOut:
-        rerank_min = float(params().get("rerank_min", 1.5))
+        rerank_min = inp.rerank_min if inp.rerank_min is not None else float(params().get("rerank_min", 1.5))
         final_query = build_query(inp.query, inp.as_of, inp.lookback_days, policy.block_sites)
         key = f"ds:search:{inp.as_of}:{inp.count}:{final_query}"
         raw = repo.cache_get(key) if repo else None
@@ -152,9 +155,11 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
         return SearchOut(final_query=final_query, hits=hits, dropped=dropped)
 
     def fetch(inp: FetchIn) -> FetchOut:
+        allowed = (fetch_allowlist(policy, {"fetch_allow_add": inp.site_allow_add}) if inp.site_allow_add is not None
+                   else fetch_allowlist(policy, params()))
         if host_matches(inp.url, policy.block_sites):                # 黑名单优先：父域在白名单也不能抓
             raise SkillFailed(f"域名在黑名单: {urlparse(inp.url).hostname}")
-        if not host_matches(inp.url, fetch_allowlist(policy, params())):
+        if not host_matches(inp.url, allowed):
             raise SkillFailed(f"域名不在抓取白名单: {urlparse(inp.url).hostname}")
         data = tools.fetch(inp.url)
         return FetchOut(url=inp.url, title=data.get("title") or "", content=data.get("content") or "")
