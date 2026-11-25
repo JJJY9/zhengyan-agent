@@ -182,7 +182,7 @@ app.add_typer(watch_app, name="watch")
 def watch_add(ticker: str, price_move_pct: float = 10):
     """订阅一只已有档案的股票。"""
     svc = _services()
-    d = svc.deps.repo.get_dossier(ticker)
+    d = svc.deps.repo.current_dossier(ticker)
     if d is None:
         typer.echo("还没有这只股票的档案，先做一次研究再订阅")
         raise typer.Exit(1)

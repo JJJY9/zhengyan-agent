@@ -83,6 +83,12 @@ class Repository:
             return None
         return max(rows, key=lambda v: (str(v["as_of"])[:10], v["version"]))["version"]
 
+    def current_dossier(self, key: str, as_of: date | None = None) -> Dossier | None:
+        """「当前档案」按研究时点取（同日再按版本号），而不是版本号最大：
+        回填研究产出的高版本旧时点档案不能被当成最新结论（watch、个人情境官等读取都用这个）。"""
+        version = self.latest_dossier_version_at(key, as_of or date.today())
+        return self.get_dossier(key, version) if version is not None else None
+
     def insert_dossier(self, dossier: Dossier) -> None:
         self.db.dossiers.insert_one(dossier.model_dump(mode="json"))
 
@@ -180,6 +186,26 @@ class Repository:
     def is_cancel_requested(self, task_id: str) -> bool:
         doc = self.db.tasks.find_one({"task_id": task_id}, projection={"cancel_requested": 1})
         return bool(doc and doc.get("cancel_requested"))
+
+    def recover_stale_tasks(self, max_age_s: float) -> int:
+        """进程重启/线程死亡后遗留的 queued/running 任务标记失败。
+
+        任务只会在状态变化或节点事件时写 updated_at：一次模型调用最长 300s，
+        停滞超过阈值的任务不可能还活着（单进程部署；并行的 CLI 任务也会持续写事件）。
+        """
+        cutoff = _now() - timedelta(seconds=max_age_s)
+        ids = [d["task_id"] for d in self.db.tasks.find(
+            {"status": {"$in": ["queued", "running"]}, "updated_at": {"$lt": cutoff}}, projection={"task_id": 1})]
+        if not ids:
+            return 0
+        self.db.tasks.update_many(
+            {"task_id": {"$in": ids}},
+            {"$set": {"status": "failed", "updated_at": _now(),
+                      "error": "任务长时间无进展（进程重启或线程死亡），已标记失败；可重新发起"}},
+        )
+        for task_id in ids:
+            self.push_event(task_id, "runner", "发现停滞任务，已自动标记失败，可重新发起")
+        return len(ids)
 
     def get_task(self, task_id: str) -> dict | None:
         return _clean(self.db.tasks.find_one({"task_id": task_id}))
