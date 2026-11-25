@@ -41,7 +41,8 @@ def fit(ticker: str, svc: Svc):
     profile = svc.profiles.current()
     sub = svc.watch.store.get_sub(ticker)
     alerts = [(a.id, "、".join(e.title for e in a.events)) for a in svc.watch.store.list_alerts(ticker, "open")]
-    result = assess(d, svc.deps.repo.get_evidence(d.evidence_ids), profile, bool(sub and sub.active), alerts)
+    result = assess(d, svc.deps.repo.get_evidence(d.evidence_ids), profile, bool(sub and sub.active), alerts,
+                    sub.last_scan_note if sub else "")
     holding = profile.holding(ticker) if profile else None
     change = next((x for x in (profile.impact if profile else []) if x["ticker"] == ticker), None)
     return {"fit": result.model_dump(mode="json"), "holding": holding.model_dump(mode="json") if holding else None,

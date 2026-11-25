@@ -122,6 +122,11 @@ def _period_key(period: str) -> str | None:
     return None
 
 
+def normalize_period(period: str) -> str | None:
+    """公共的报告期归一（扫描/派生指标复用），无法解析返回 None。"""
+    return _period_key(str(period))
+
+
 def ttm(cumulative: dict[str, Decimal], period: str) -> Decimal | None:
     """滚动四季度：年报直接用；否则 = 本期累计 + 上年年报 - 上年同期累计。缺任一项返回 None。"""
     p = _period_key(period)

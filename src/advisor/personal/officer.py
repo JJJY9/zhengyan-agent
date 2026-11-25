@@ -89,20 +89,24 @@ def _evidence(d: Dossier) -> FitCheck:
     return FitCheck(key="evidence", label="结论完整度", status="ok", detail="档案已通过质量门控。")
 
 
-def _freshness(subscribed: bool, open_alerts: list[tuple[str, str]]) -> FitCheck:
+def _freshness(subscribed: bool, open_alerts: list[tuple[str, str]], scan_note: str = "") -> FitCheck:
     if open_alerts:
         return FitCheck(key="freshness", label="待复核", status="attention", refs=[a for a, _ in open_alerts],
                         detail="订阅发现新变化：" + "；".join(t for _, t in open_alerts[:3]))
     if subscribed:
+        if "取数失败" in (scan_note or ""):     # 扫描失败不等于没有变化：不能显示「未发现变化」
+            return FitCheck(key="freshness", label="待复核", status="unknown",
+                            detail=f"最近一次自动扫描没能取到数据，无法确认是否有新变化：{scan_note[:120]}")
         return FitCheck(key="freshness", label="待复核", status="ok", detail="订阅最近一次扫描未发现影响结论的变化。")
     return FitCheck(key="freshness", label="待复核", status="unknown", detail="还没订阅这只股票，新财报和公告不会自动提醒。")
 
 
 def assess(d: Dossier, evidence: list[EvidenceCard], profile: ProfileVersion | None,
-           subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None) -> PersonalFit:
+           subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None,
+           scan_note: str = "") -> PersonalFit:
     facts = metric_facts(evidence)
     checks = [_thesis(d, profile), _drawdown(facts, profile), _horizon(d, facts, profile), _evidence(d),
-              _freshness(subscribed, open_alerts or [])]
+              _freshness(subscribed, open_alerts or [], scan_note)]
     n = {s: sum(c.status == s for c in checks) for s in ("conflict", "attention", "unknown")}
     summary = ("与你确认的约束有冲突，建议先复核再做决定" if n["conflict"] else
                "大体相容，但有需要留意的地方" if n["attention"] else
@@ -112,11 +116,12 @@ def assess(d: Dossier, evidence: list[EvidenceCard], profile: ProfileVersion | N
 
 
 def profile_impact(d: Dossier, evidence: list[EvidenceCard], old: ProfileVersion | None, new: ProfileVersion,
-                   subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None) -> dict | None:
+                   subscribed: bool = False, open_alerts: list[tuple[str, str]] | None = None,
+                   scan_note: str = "") -> dict | None:
     """约束改了以后，同一份档案的个人情境结论哪里变了。只看结论状态的变化；购买理由改了也算。
     依赖链：用户约束 → 个人情境结论。档案里的研究结论不依赖你的约束，不需要重新研究。"""
-    before = assess(d, evidence, old, subscribed, open_alerts)
-    after = assess(d, evidence, new, subscribed, open_alerts)
+    before = assess(d, evidence, old, subscribed, open_alerts, scan_note)
+    after = assess(d, evidence, new, subscribed, open_alerts, scan_note)
     changes = []
     for b, a in zip(before.checks, after.checks):
         thesis_edit = a.key == "thesis" and b.detail != a.detail
