@@ -98,7 +98,8 @@ def _site_problems(run: Run, ledger: Ledger) -> list[str]:
 
 
 def overfit_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
-    names = {d.get("name") for d in ledger.db.dossiers.find({}, projection={"name": 1}) if d.get("name")}
+    from advisor.rsi.issues import USER_DOSSIER
+    names = {d.get("name") for d in ledger.db.dossiers.find({**USER_DOSSIER}, projection={"name": 1}) if d.get("name")}
     if run.kind == "lessons":
         bad = []
         for c in run.diff.get("cards", []):
@@ -142,11 +143,16 @@ def noise_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
 
 
 def cost_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
-    bt, ct = ev["arms"]["base"].get("tokens", 0), ev["arms"]["cand"].get("tokens", 0)
+    bt, ct = float(ev["arms"]["base"].get("tokens") or 0), float(ev["arms"]["cand"].get("tokens") or 0)
+    unit = "token"
+    if not bt and not ct:
+        bp, cp = ev["arms"]["base"].get("cost_proxy"), ev["arms"]["cand"].get("cost_proxy")
+        if bp is not None or cp is not None:      # 确定性回放没有 token 计费：用保留下来的线索量作成本代理
+            bt, ct, unit = float(bp or 0), float(cp or 0), "线索量（成本代理）"
     prim = ev["primary"]
     b, c = _arm(ev, "base", prim), _arm(ev, "cand", prim)
     base_mean, cand_mean = b.get("mean") or 0.0, c.get("mean") or 0.0
-    inc = (ct - bt) / bt if bt else 0.0
+    inc = (ct - bt) / bt if bt else (1.0 if ct else 0.0)
     if base_mean <= 0:
         # 基线质量为 0 时相对提升没有定义：不能拿 1e-9 当分母把任何微小提升放大成天文数字
         ok = inc <= COST_FREE_RATIO and cand_mean > base_mean
@@ -156,7 +162,7 @@ def cost_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:
         ok = inc <= COST_FREE_RATIO or gain >= inc
         quality = f"质量相对提升 {gain:+.0%}"
     return GateResult(name="cost", label="成本门控", passed=ok,
-                      detail=f"token {bt}→{ct}（{inc:+.0%}），{quality}" + ("" if ok else "：花费涨幅超过质量收益"))
+                      detail=f"{unit} {bt:g}→{ct:g}（{inc:+.0%}），{quality}" + ("" if ok else "：花费涨幅超过质量收益"))
 
 
 def regression_gate(run: Run, ev: dict, ledger: Ledger) -> GateResult:

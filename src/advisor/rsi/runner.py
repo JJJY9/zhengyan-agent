@@ -122,6 +122,7 @@ class RSIRunner:
             if active != run.base_version:
                 raise TransitionError(f"{KIND_LABEL[run.kind]}在用版本已从 v{run.base_version} 变为 v{active}，候选需重新评测")
             try:
+                resolved = self._resolved_issues(run)
                 asset = self.ledger.append_asset(run.kind, run.content, run.change_reason, actor, run.base_version, run.run_id)
             except LedgerError as e:
                 raise TransitionError(str(e)) from e
@@ -132,13 +133,14 @@ class RSIRunner:
             for prev in self.ledger.runs_of(run.kind, "released"):
                 if prev.run_id != run.run_id:
                     self._move(prev, "archived", "archive", "system", f"被 {run.run_id} 发布的 v{asset.version} 取代")
-            self.ledger.set_issue_status(run.issue_ids, "addressed")
+            self.ledger.set_issue_status(resolved, "addressed")   # 只标记回放确认已判对的坏案例；其余留在 open
             self.loader.invalidate()
             run.released_version = asset.version
             self.ledger.save_run(run, expect_status="released")
             self.ledger.event("release", actor, run_id=run.run_id, kind=run.kind, scenario=run.scenario,
                               from_status="released", to_status="released",
-                              detail=f"发布{KIND_LABEL[run.kind]} v{asset.version}（parent v{run.base_version}，sha256 {asset.sha256[:10]}）",
+                              detail=(f"发布{KIND_LABEL[run.kind]} v{asset.version}（parent v{run.base_version}，"
+                                      f"sha256 {asset.sha256[:10]}）；坏案例回放确认 {len(resolved)}/{len(run.issue_ids)} 条已修复"),
                               active_version=asset.version)
             return run
         except Exception:
@@ -172,6 +174,32 @@ class RSIRunner:
         self._reconcile_rollback(kind, current.parent_version, actor, reason)
         self.loader.invalidate()
         return {"kind": kind, "from": current.version, "to": current.parent_version}
+
+    def _resolved_issues(self, run: Run) -> list[str]:
+        """发布前按评测回放逐条确认坏案例是否真的被判对：路由类候选只把已修复的标记 addressed。"""
+        if run.kind != "routing":
+            return list(run.issue_ids)
+        from advisor.routing import route_from_probs
+        cfg = {**self.deps.policy.routing, **run.content}
+        resolved = []
+        eval_runs = list(self.deps.repo.db.eval_runs.find({"type": "routing"}, projection={"_id": 0})
+                         .sort("created_at", -1).limit(5))
+        for issue in self.ledger.get_issues(run.issue_ids):
+            q = (issue.source or {}).get("question")
+            rows = [r for rr in eval_runs for r in rr.get("rows", []) if r.get("question") == q]
+            if not q or not rows:
+                continue
+            fixed = True
+            for r in rows:
+                if r.get("source") in ("model", "abstain"):
+                    route = route_from_probs(r["probs"], cfg, r.get("stakes"), r.get("uncertainty"),
+                                             r.get("intent", "research")).route
+                else:
+                    route = r["route"]
+                fixed = fixed and route == r["label"]
+            if fixed:
+                resolved.append(issue.id)
+        return resolved
 
     def _reconcile_rollback(self, kind: str, active_version: int, actor: str, reason: str = "") -> None:
         """账本对齐：指针已不在用的已发布运行标记回滚、坏案例重开；可安全重试（幂等）。"""

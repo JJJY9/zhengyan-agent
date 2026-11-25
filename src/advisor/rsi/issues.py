@@ -21,6 +21,8 @@ EXPERT_USABLE_MAX = 0.25        # 可用结果（权威且可抓取）占比低�
 SITE_MIN_RESULTS = 15           # 白名单外的站点至少出现这么多次
 SITE_AUTHORITY_MIN = 0.8        # 且其中被搜索引擎评为权威的占比不低于此值 → 可能是白名单漏掉的站点
 _QUERY_SUFFIX = re.compile(r" (?:after:|before:|-site:)")
+# 评测/对照评测写入隔离命名空间的档案（key 含 ":"）不是真实研究，不作为坏案例与评测样本
+USER_DOSSIER: dict = {"key": {"$not": {"$regex": ":"}}}
 
 
 def _fp(*parts: str) -> str:
@@ -35,7 +37,7 @@ def _issue(scenario: str, kind: str, case: str, evidence: list[str], hypothesis:
 
 def s1_issues(repo) -> list[Issue]:
     out = []
-    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}}, projection={"_id": 0, "report_md": 0}):
+    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}, **USER_DOSSIER}, projection={"_id": 0, "report_md": 0}):
         delib = d["deliberation"]
         claims = {c["id"]: c for t in delib.get("team", []) for c in t.get("claims", [])}
         rulings = {r["challenge_id"]: r for r in delib.get("rulings", [])}
@@ -51,7 +53,7 @@ def s1_issues(repo) -> list[Issue]:
                               [f"质询：{ch['text']}", f"裁决：{r['reason']}"],
                               CHALLENGE_HYPOTHESIS.get(ch["kind"], CHALLENGE_HYPOTHESIS["logic_gap"]), src,
                               d["key"], str(d["version"]), ch["id"]))
-    for d in repo.db.dossiers.find({"claims.status": "disputed"}, projection={"_id": 0, "report_md": 0}):
+    for d in repo.db.dossiers.find({"claims.status": "disputed", **USER_DOSSIER}, projection={"_id": 0, "report_md": 0}):
         for c in d["claims"]:
             if c["status"] != "disputed":
                 continue
@@ -83,8 +85,8 @@ def s2_issues(repo) -> list[Issue]:
 
 def s3_issues(repo) -> list[Issue]:
     out = []
-    for d in repo.db.dossiers.find({}, projection={"_id": 0, "key": 1, "version": 1, "clue_ids": 1, "claims": 1,
-                                                   "deliberation": 1, "ticker": 1, "as_of": 1}):
+    for d in repo.db.dossiers.find({**USER_DOSSIER}, projection={"_id": 0, "key": 1, "version": 1, "clue_ids": 1, "claims": 1,
+                                                             "deliberation": 1, "ticker": 1, "as_of": 1}):
         clue_ids = d.get("clue_ids") or []
         if len(clue_ids) < WEB_MIN_CARDS:
             continue
@@ -153,7 +155,7 @@ def s3_expert_issues(repo, b_min: int, allow: tuple[str, ...], block: tuple[str,
     from advisor.experts.specs import EXPERTS
     results = cached_results(repo)
     out = []
-    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}},
+    for d in repo.db.dossiers.find({"deliberation": {"$ne": None}, **USER_DOSSIER},
                                    projection={"_id": 0, "key": 1, "version": 1, "ticker": 1, "deliberation": 1}):
         for t in (d.get("deliberation") or {}).get("team", []):
             per_q = [(q, results.get(q, [])) for q in t.get("queries", [])]
