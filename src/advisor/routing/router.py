@@ -12,6 +12,7 @@ from advisor.contracts.deliberation import RouteDecision
 from advisor.harness.errors import TaskCancelled
 
 ORDER = ("quick", "standard", "deep")
+_STAKES_RANK = {"low": 0, "mid": 1, "high": 2}
 
 ROUTER_SYSTEM = """你是投研任务的路由判别器（System 1），只做分类，不回答问题，不写分析。
 给出三类流程的概率（三者之和为 1）：
@@ -30,21 +31,41 @@ class RouterOut(BaseModel):
     reasons: list[str] = Field(default_factory=list, max_length=3)
 
 
+def _finite(value) -> float:
+    """概率必须是有限数：NaN/Infinity/非数字一律按 0 处理（小模型返回坏值时不能污染整条链路）。"""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
+
 def normalize(probs: dict[str, float]) -> dict[str, float]:
-    total = sum(max(v, 0.0) for v in probs.values())
+    clean = {k: max(_finite(v), 0.0) for k, v in probs.items()}
+    total = sum(clean.values())
     if total <= 0:
-        return {k: 1 / len(probs) for k in probs}
-    return {k: max(v, 0.0) / total for k, v in probs.items()}
+        return {k: 1 / len(probs) for k in probs} if probs else {}
+    return {k: clean[k] / total for k in probs}
 
 
-def calibrate(probs: dict[str, float], temperature: float) -> dict[str, float]:
-    """温度缩放：T>1 让过度自信的分布变平，T<1 变尖。"""
+def _calibrate_raw(probs: dict[str, float], temperature: float) -> dict[str, float]:
+    """温度缩放（未舍入）：T>1 让过度自信的分布变平，T<1 变尖；非法温度按 1.0 处理。"""
+    try:
+        t = float(temperature)
+    except (TypeError, ValueError):
+        t = 1.0
+    if not math.isfinite(t) or t <= 0:
+        t = 1.0                       # 0/负数会让排序反转或除零：按不校准处理
     eps = 1e-6
-    logits = {k: math.log(max(v, eps)) / temperature for k, v in probs.items()}
+    logits = {k: math.log(max(_finite(v), eps)) / t for k, v in probs.items()}
     m = max(logits.values())
     exp = {k: math.exp(v - m) for k, v in logits.items()}
     z = sum(exp.values())
-    return {k: round(v / z, 4) for k, v in exp.items()}
+    return {k: v / z for k, v in exp.items()}
+
+
+def calibrate(probs: dict[str, float], temperature: float) -> dict[str, float]:
+    return {k: round(v, 4) for k, v in _calibrate_raw(probs, temperature).items()}
 
 
 # 决策小模型（Kev/Jev）的题目。Kev 只训练过英文指令（中文指令实测路由准确率低 12 个百分点），
@@ -112,14 +133,18 @@ def decide_route(h, question: str, intent: str, requested: str, cfg: dict) -> Ro
 def route_from_probs(probs: dict[str, float], cfg: dict, stakes: str | None = None, uncertainty: str | None = None,
                      intent: str = "research") -> RouteDecision:
     """判别器原始概率 → 校准 → 拒判/升级。纯函数：RSI 用它在记录下的概率上回放不同参数。"""
-    cal = calibrate(probs, float(cfg.get("temperature", 1.0)))
-    ranked = sorted(cal, key=cal.get, reverse=True)
+    raw = _calibrate_raw(probs, cfg.get("temperature", 1.0))
+    cal = {k: round(v, 4) for k, v in raw.items()}
+    ranked = sorted(raw, key=raw.get, reverse=True)
     top = ranked[0]
     reasons: list[str] = []
-    decision = RouteDecision(route=top, source="model", probs={k: round(v, 4) for k, v in probs.items()},
+    decision = RouteDecision(route=top, source="model", probs={k: round(_finite(v), 4) for k, v in probs.items()},
                              calibrated=cal, stakes=stakes, uncertainty=uncertainty, reasons=reasons)
-    force_deep = stakes == cfg.get("deep_threshold_stakes", "high") and uncertainty == "high" and top != "deep"
-    if cal[top] < float(cfg.get("abstain_below", 0.55)):
+    stake_rank = _STAKES_RANK.get(stakes or "low", 0)
+    threshold = str(cfg.get("deep_threshold_stakes", "high"))
+    force_deep = (stake_rank >= _STAKES_RANK.get(threshold, 2)
+                  and uncertainty == "high" and top != "deep")
+    if raw[top] < float(cfg.get("abstain_below", 0.55)):      # 用未舍入的概率判阈值：[0.54995,0.55) 也应拒判
         deeper = max(ranked[:2], key=ORDER.index)            # 拒判：在前两名里取更重的流程
         if force_deep:                                        # 但高后果+高分歧时，保守方向就是深研
             deeper = "deep"

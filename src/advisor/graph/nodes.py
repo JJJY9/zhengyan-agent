@@ -21,6 +21,18 @@ from advisor.skills.research.earnings_review import (
 )
 
 _CODE = re.compile(r"(?<!\d)([036]\d{5}|[48]\d{5}|92\d{4})(?!\d)")
+_CODE_SPACED = re.compile(r"(?<!\d)([036]\d{2}\s?\d{3}|[036]\d{5}|[48]\d{5}|92\d{4})(?!\d)")
+_FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _norm_digits(text: str) -> str:
+    """全角数字归一为半角（不合并词间空格，避免把「600999 10-18」粘成一个长数字）。"""
+    return (text or "").translate(_FW_DIGITS)
+
+
+def _codes_of(text: str) -> set[str]:
+    """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。"""
+    return {m.group(1).replace(" ", "") for m in _CODE_SPACED.finditer(text or "")}
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
@@ -75,30 +87,42 @@ class Nodes:
     # ---------- L0：任务识别 ----------
     def intake(self, state: ResearchState) -> dict:
         q = state["question"]
+        qn = _norm_digits(q)
         if not state.get("budget"):
             state = {**state, "budget": Budget(limits=self.d.policy.route("quick").budget).to_dict()}
         h, budget = self._h(state, "intake")
-        code = state.get("ticker")
-        if not code and (m := _CODE.search(q)):
-            code = m.group(1)
+        explicit = state.get("ticker")
+        codes = _codes_of(qn)
+        code = explicit or (next(iter(codes)) if len(codes) == 1 else None)   # 多个代码不硬猜，交给模型/澄清
+        known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
+        name_code = next((t for t, n in known.items() if n and n in qn), None)   # 名字先本地解析，脱敏后模型看不到也能识别
         out = None
         if self.d.policy.intake.get("classifier", "llm") == "small" and h.decision_client is not None:
             try:
-                out = self._intake_small(h, q, code)
+                out = self._intake_small(h, q, code or name_code, known)
             except TaskCancelled:
                 raise
             except Exception:  # 小模型不可用不致命：退回大模型
                 out = None
         if out is None:
+            # 入口识别需要保留公司名：先只脱敏金额/账号（「我持有某某1000股」→「我持有某某[已脱敏]」），
+            # 发往模型前 Harness 还会做一次常规脱敏兜底。
+            masked = self.guard.redact_amounts(q)
             try:
-                out = h.llm("classify", INTAKE_SYSTEM, q, IntakeOut, purpose="intake")
+                out = h.llm("classify", INTAKE_SYSTEM, masked, IntakeOut, purpose="intake")
             except TaskCancelled:
                 raise
             except Exception as e:  # 识别失败不致命：退回规则
                 self._event(state, "intake", f"自动识别失败，改用规则识别：{e}")
                 out = IntakeOut()
-        if not code and out.ticker and _CODE.fullmatch(out.ticker):
-            code = out.ticker
+        model_ticker = _norm_digits(out.ticker or "").replace(" ", "").strip()
+        if explicit is None:
+            if _CODE.fullmatch(model_ticker) and (not codes or model_ticker in codes):
+                code = model_ticker                       # 模型看到上下文：金额里的数字不再被当成代码
+            elif len(codes) == 1:
+                code = next(iter(codes))
+            elif name_code:
+                code = name_code
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = bool(self.guard.find_sensitive(q))
         upd = {
@@ -106,19 +130,20 @@ class Nodes:
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
         }
         if not code:
-            upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
+            if len(codes) > 1:
+                upd.update(status="failed", error=f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
+                                                   "请只保留一个或直接写明要研究哪一只")
+            else:
+                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
         self._event(state, "intake", f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
                                      f"问题类型：{INTENT_LABEL.get(intent, intent)}" + ("；问题里含个人信息，已脱敏" if sensitive else ""))
         return upd
 
-    def _intake_small(self, h, q: str, code: str | None) -> IntakeOut | None:
-        """小模型路径：意图由决策小模型四选一；代码靠正则或已有档案的简称；关注点按关键词抽取。
+    def _intake_small(self, h, q: str, code: str | None, known: dict[str, str]) -> IntakeOut | None:
+        """小模型路径：意图由决策小模型四选一；代码靠正则/已有档案的简称（由调用方解析）。
         识别不到代码时返回 None，交给大模型（它能从"茅台"这类简称推出代码）。"""
-        known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
         if not code:
-            code = next((t for t, n in known.items() if n and n in q), None)
-            if not code:
-                return None
+            return None
         probs = h.decide(q, INTENT_QUESTIONS, purpose="intake_small")["intent"]
         words = [w for w in self.d.policy.intake.get("focus_keywords", []) if w in q]
         words = [w for w in words if not any(w != o and w in o for o in words)]   # 去掉被更长词包含的
@@ -308,7 +333,9 @@ class Nodes:
         notes = [] if state.get("calc_ids") else ["缺少同口径派生指标"]
         weak = disputed or verified_facts < MIN_VERIFIED_FACTS or notes
         upd: dict = {}
-        if weak and should_escalate(state.get("routing") or {}, len(disputed), len(draft.get("dissents", [])), self.d.policy.routing):
+        # 升级不看 weak：反方观点达到阈值本身就要升级（此前 weak 短路导致 min_dissents 永远无法单独触发）
+        escalate = should_escalate(state.get("routing") or {}, len(disputed), len(draft.get("dissents", [])), self.d.policy.routing)
+        if escalate:
             decision = "escalate"
             routing = RouteDecision.model_validate(state["routing"])
             routing = routing.model_copy(update={
