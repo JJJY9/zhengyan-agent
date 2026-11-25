@@ -1,8 +1,9 @@
 """三期：用户确认档案。个人约束只能由用户本人确认，系统只读；每次修改生成新版本，旧版本保留。"""
+import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class RiskProfile(BaseModel):
@@ -17,6 +18,14 @@ class Holding(BaseModel):
     name: str = ""
     thesis: str = Field(min_length=4, max_length=300, description="购买理由 / 关注理由")
     horizon_months: int | None = Field(default=None, ge=1, le=600)
+
+    @field_validator("thesis")
+    @classmethod
+    def _meaningful_thesis(cls, v: str) -> str:
+        t = v.strip()
+        if len(t) < 4 or not re.search(r"[0-9A-Za-z一-鿿]", t):
+            raise ValueError("购买理由不能是空白或纯标点")
+        return t
 
 
 class ProfileInput(BaseModel):
