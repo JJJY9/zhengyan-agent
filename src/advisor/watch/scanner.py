@@ -118,7 +118,8 @@ class Watcher:
             except WatchError as e:
                 log(f"{sub.ticker}：{e}")
                 continue
-            log(f"{sub.name or sub.ticker}（{sub.ticker}）：{alert_summary(alert) if alert else '没有变化，不提醒'}")
+            note = (self.store.get_sub(sub.ticker) or sub).last_scan_note
+            log(f"{sub.name or sub.ticker}（{sub.ticker}）：{alert_summary(alert) if alert else (note or '没有变化，不提醒')}")
             if alert:
                 out.append(alert)
         return out
@@ -204,7 +205,7 @@ class Watcher:
         return out
 
     # ---------- 增量复核 ----------
-    def start_review(self, alert_id: str, service) -> str:
+    def start_review(self, alert_id: str, service, background: bool = True) -> str:
         alert = self.store.get_alert(alert_id)
         if alert is None:
             raise WatchError("提醒不存在")
@@ -217,7 +218,7 @@ class Watcher:
         question = f"{alert.name}（{alert.ticker}）上次研究后有新变化：{changes}。请用新数据重新研究，说明哪些旧结论仍成立、哪些需要修正。"[:480]
         try:
             task_id = service.start(ResearchRequest(question=question, ticker=alert.ticker, route="standard"),
-                                    review_focus=focus)
+                                    background=background, review_focus=focus)
         except Exception:
             self.store.update_alert(alert_id, status="open")   # 起任务失败：把提醒放回待处理，允许重试
             raise

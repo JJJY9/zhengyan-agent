@@ -36,7 +36,7 @@ def create_app(deps: Deps | None = None, checkpointer=None, auth: tuple[str, str
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        services = build_services(deps, checkpointer)
+        services = build_services(deps, checkpointer, recover_stale=True)
         app.state.services = services
         app.state.jobs = JobBoard()
         hours = float(services.deps.policy.watch.get("scan_interval_hours", 0)) if production else 0

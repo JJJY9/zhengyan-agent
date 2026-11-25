@@ -35,8 +35,15 @@ def research(
         raise typer.Exit(1) from e
     task = deps.repo.get_task(task_id)
     if task["status"] == "waiting_approval":
-        typer.echo(task["interrupt"]["message"])
-        approve = yes or typer.confirm("继续？")
+        ticket = task.get("interrupt") or {}
+        typer.echo(ticket.get("message", ""))
+        if ticket.get("type") == "review":
+            # 高后果未决争议的人工复核门：--yes 只自动同意「个人信息脱敏」类 consent，不越过复核
+            for item in ticket.get("items") or []:
+                typer.echo(f"  - {item}")
+            approve = typer.confirm("存在高后果未决争议，确认以部分结论提交？")
+        else:
+            approve = yes or typer.confirm("继续？")
         svc.resume(task_id, approve, background=False)
         task = deps.repo.get_task(task_id)
     for e in task["events"]:
@@ -193,17 +200,26 @@ def watch_add(ticker: str, price_move_pct: float = 10):
 @watch_app.command("scan")
 def watch_scan():
     """扫描全部订阅（可放进 cron 定时执行）。"""
-    alerts = _services().watch.scan_all(log=typer.echo)
+    svc = _services()
+    alerts = svc.watch.scan_all(log=typer.echo)
     for a in alerts:
         typer.echo(f"{a.id} {a.name}：{'、'.join(e.title for e in a.events)}；受影响结论 {len(a.affected)} 条")
+    failed = [s for s in svc.watch.store.list_subs() if "取数失败" in (s.last_scan_note or "")]
+    if failed:                                   # 脚本化使用：取数失败不能以 0 退出
+        typer.echo("扫描未完成（取数失败）：" + "、".join(s.ticker for s in failed))
+        raise typer.Exit(1)
 
 
 @watch_app.command("review")
 def watch_review(alert_id: str):
     """带着受影响的结论发起增量复核。"""
     svc = _services()
-    task_id = svc.watch.start_review(alert_id, svc.research)
-    typer.echo(f"已发起复核任务 {task_id}（在 Web 研究任务页查看进度）")
+    # CLI 进程退出会带走线程池：复核任务必须前台同步执行，且按真实结果报告
+    task_id = svc.watch.start_review(alert_id, svc.research, background=False)
+    task = svc.deps.repo.get_task(task_id)
+    typer.echo(f"复核任务 {task_id} 结束：{task['status']}" + (f" {task.get('error') or ''}" if task.get("error") else ""))
+    if task["status"] != "done":
+        raise typer.Exit(1)
 
 
 strategy_app = typer.Typer(help="策略卡与前向模拟盘：只模拟，不交易；晋级须过门控并人工批准")

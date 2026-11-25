@@ -72,6 +72,6 @@ def test_startup_recovery_marks_legacy_running_tasks(repo, policy):
     repo.db.tasks.update_one({"task_id": "t_left"},
                              {"$set": {"status": "running",
                                        "updated_at": datetime.now(timezone.utc) - timedelta(seconds=3600)}})
-    Services(service.deps, service)                               # 模拟进程重启
+    Services(service.deps, service, recover_stale=True)           # 模拟服务进程重启（CLI 路径不回收）
     assert repo.get_task("t_left")["status"] == "failed"
     assert "重新发起" in (repo.get_task("t_left").get("error") or "")

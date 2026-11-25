@@ -127,7 +127,7 @@ class _SyncService:
     def __init__(self, svc):
         self.svc = svc
 
-    def start(self, req, **kw):
+    def start(self, req, background=True, **kw):
         req = req.model_copy(update={"as_of": date(2026, 10, 30)})
         return self.svc.start(req, background=False, **kw)
 
