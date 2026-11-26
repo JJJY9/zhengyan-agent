@@ -432,12 +432,16 @@ class Nodes:
         )
         evidence = {c.id: c for c in _cards(state)}
         prior_v = (state.get("prior") or {}).get("version")
-        if prior_v is not None and dossier.parent_version != prior_v:
+        if dossier.parent_version != prior_v:
             # 研究开始载入的对照版本与提交快照不一致：即便首次插入成功也要在档案里自述
-            note = (f"并发提交：上一版本在本任务研究期间由 v{prior_v} 变为 v{dossier.parent_version}，"
-                    "已按最新版本续链")
-            if dossier.prior_review:
-                note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+            if prior_v is None:
+                note = (f"并发提交：研究开始时无上一版本，提交时已有 v{dossier.parent_version}，"
+                        "已按最新版本续链；本档案未做上一版本对照")
+            else:
+                note = (f"并发提交：上一版本在本任务研究期间由 v{prior_v} 变为 v{dossier.parent_version}，"
+                        "已按最新版本续链")
+                if dossier.prior_review:
+                    note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
             self._event(state, "commit", note)
             dossier = dossier.model_copy(update={"boundary_notes": [*dossier.boundary_notes, note]})
         for attempt in range(3):

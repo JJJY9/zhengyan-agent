@@ -103,10 +103,10 @@ def gather_web(h, deps, queries: list[str], as_of: date, route: str, max_fetch: 
         )
         if not deps.repo.put_evidence(card):
             res.unknowns.append(f"证据元数据与已有快照不一致（保留旧版）：{card.id}")
-            getter = getattr(deps.repo, "get_evidence", None)   # 精简仓库没有回读接口
-            stored = getter([card.id]) if getter else []
-            if stored:
-                card = stored[0]                # 报告必须引用库里真正生效的卡片，而不是被拒的新元数据
+        getter = getattr(deps.repo, "get_evidence", None)       # 精简仓库没有回读接口
+        stored = getter([card.id]) if getter else []
+        if stored:
+            card = stored[0]    # 引用必须等于库内生效卡：幂等重放时新会话元数据并不落库
         res.cards.append(card)
     res.hits, res.clusters, res.fetched = len(hits), len(reps), len(fetched)
     return res

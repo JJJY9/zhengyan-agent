@@ -70,13 +70,23 @@ def summarize(results: list[dict], baseline: str = "standard", candidate: str = 
 def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = None) -> str:
     repo = svc.deps.repo
     run_id = run_id or "ev_" + uuid.uuid4().hex[:8]
-    run = repo.get_eval(run_id) or {"run_id": run_id, "type": "compare", "routes": routes, "cases": cases,
-                                    "results": [], "created_at": datetime.now(timezone.utc)}
-    run.update(status="running", routes=routes, cases=cases,
-               instance=getattr(getattr(svc, "research", None) or svc, "instance", None))
-    run.setdefault("results", [])
-    repo.save_eval(run)
+    run = {"run_id": run_id, "type": "compare", "status": "running", "routes": routes, "cases": cases,
+           "results": [],
+           "instance": getattr(getattr(svc, "research", None) or svc, "instance", None),
+           "created_at": datetime.now(timezone.utc)}
     try:
+        existing = repo.get_eval(run_id)
+        if existing is not None:
+            if existing.get("status") != "running":
+                return run_id              # 已被停机/回收判终态：不再执行，也不复活
+            run = existing
+            run.update(status="running", routes=routes, cases=cases,
+                       instance=run.get("instance") or getattr(getattr(svc, "research", None) or svc, "instance", None))
+            run.setdefault("results", [])
+            if not repo.save_eval(run, only_if_running=True):
+                return run_id              # 认领失败（并发终态）：放弃执行
+        else:
+            repo.save_eval(run)            # CLI 新建：无预创建文档，允许首插
         for case in cases:
             for route in routes:
                 entry = {"case": case["id"], "route": route}
