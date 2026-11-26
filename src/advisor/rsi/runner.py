@@ -57,17 +57,18 @@ class RSIRunner:
         return run
 
     # ③ 对比 + ④ 门控
-    def evaluate(self, run_id: str, actor: str = "owner", log: Callable[[str], None] = lambda m: None) -> Run:
+    def evaluate(self, run_id: str, actor: str = "owner", log: Callable[[str], None] = lambda m: None,
+                 is_cancelled: Callable[[], bool] = lambda: False) -> Run:
         run = self._get(run_id, "draft")
         base = self.ledger.get_asset(run.kind, run.base_version)
         if run.scenario == "S1":
             cards = lambda c: [LessonCard.model_validate(x) for x in c.get("cards", [])]   # noqa: E731
-            ev = evaluate_s1(self.deps, self.ledger, run, cards(base.content), cards(run.content), log)
+            ev = evaluate_s1(self.deps, self.ledger, run, cards(base.content), cards(run.content), log, is_cancelled)
         elif run.scenario == "S2":
             self._top_up_routing(log)
-            ev = evaluate_s2(self.deps, self.ledger, run, base.content, run.content, log)
+            ev = evaluate_s2(self.deps, self.ledger, run, base.content, run.content, log, is_cancelled)
         else:
-            ev = evaluate_s3(self.deps, self.ledger, run, base.content, run.content, log)
+            ev = evaluate_s3(self.deps, self.ledger, run, base.content, run.content, log, is_cancelled)
         run.eval = ev
         run.gates = run_gates(run, ev, self.ledger)
         current = self.ledger.get_run(run.run_id)

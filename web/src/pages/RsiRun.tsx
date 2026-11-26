@@ -31,6 +31,11 @@ export default function RsiRun() {
   const follow = async (jobId: string) => {
     const j = await waitJob(jobId, setJob, () => !alive.current);
     if (j.status === "failed") throw new Error(j.error ?? "评测失败");
+    if (j.status === "cancelled") throw new Error("评测已取消（进度未写入，可重新发起）");
+  };
+  const cancelJob = async () => {
+    if (!job || job.status !== "running") return;
+    try { await api.jobCancel(job.job_id); } catch (e) { setError((e as Error).message); }
   };
   const evaluate = () => act(async () => follow((await api.rsi.evaluate(id)).job_id));
   // 刷新页面后，后台仍在跑的评测要重新接上进度，而不是显示成可以再点一次
@@ -80,6 +85,7 @@ export default function RsiRun() {
               </>
             )}
             {busy && job && <span className="muted small">{job.log[job.log.length - 1]}</span>}
+            {busy && job?.status === "running" && <button className="ghost" onClick={cancelJob}>取消作业</button>}
           </div>
         </section>
 

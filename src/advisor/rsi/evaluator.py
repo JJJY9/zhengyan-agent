@@ -14,7 +14,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
-from advisor.harness import Budget
+from advisor.harness import Budget, TaskCancelled
 from advisor.rsi.issues import USER_DOSSIER
 from advisor.rsi.ledger import Ledger
 from advisor.rsi.loader import recall, render_lessons
@@ -146,7 +146,8 @@ def _judge(h, items: list[dict], cards: list[LessonCard]) -> tuple[dict[str, boo
 
 
 def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], cand_cards: list[LessonCard],
-                log: Callable[[str], None] = lambda m: None) -> dict:
+                log: Callable[[str], None] = lambda m: None,
+                is_cancelled: Callable[[], bool] = lambda: False) -> dict:
     issues = ledger.get_issues(run.issue_ids)
     all_issues = ledger.list_issues(scenario="S1")
     items = s1_items(deps.repo, all_issues)
@@ -174,6 +175,8 @@ def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], ca
         per_slice: dict[str, list[float]] = {k: [] for k in slices}
         tokens = 0
         for rep in range(REPEATS):
+            if is_cancelled():                                  # 取消检查点：每轮重复之间
+                raise TaskCancelled("评测作业已取消（进度已保留，可重新评测）")
             for name, sl in slices.items():
                 if not sl:
                     continue
@@ -194,10 +197,13 @@ def evaluate_s1(deps, ledger: Ledger, run: Run, base_cards: list[LessonCard], ca
 
 
 # ======================= S2：路由参数 =======================
-def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None] = lambda m: None) -> dict:
+def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None] = lambda m: None,
+                is_cancelled: Callable[[], bool] = lambda: False) -> dict:
     """在多次独立判别器运行记录下的原始概率上回放：每次评测运行就是一次独立重复，天然暴露判别器自身的随机波动。"""
     from advisor.routing import route_from_probs
     # 只统计可评分的运行：失败/没有 rows 的评测文档不算一次独立重复
+    if is_cancelled():
+        raise TaskCancelled("评测作业已取消（进度已保留，可重新评测）")
     runs = list(deps.repo.db.eval_runs.find({"type": "routing", "status": "done", "rows.0": {"$exists": True}},
                                             projection={"_id": 0}).sort("created_at", -1).limit(5))
     runs = [r for r in runs if r.get("rows")]
@@ -296,11 +302,14 @@ def _s3_slices(deps, ledger: Ledger) -> tuple[dict[str, list[dict]], set[str]]:
     return slices, replay_ids
 
 
-def evaluate_s3(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None] = lambda m: None) -> dict:
+def evaluate_s3(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None] = lambda m: None,
+                is_cancelled: Callable[[], bool] = lambda: False) -> dict:
     """阈值与站点名单：在缓存的原始搜索结果上确定性回放，三次重复结果一致（噪声为 0）。
     专家搜索侧重：要重新生成搜索词并真实搜索，走 _evaluate_hint。"""
+    if is_cancelled():
+        raise TaskCancelled("评测作业已取消（进度已保留，可重新评测）")
     if "hint" in run.diff:
-        return _evaluate_hint(deps, ledger, run, base, cand, log)
+        return _evaluate_hint(deps, ledger, run, base, cand, log, is_cancelled)
     slices, replay_ids = _s3_slices(deps, ledger)
     full = lambda c: {**deps.policy.search, **c}     # noqa: E731
     arms: dict[str, dict] = {}
@@ -360,7 +369,8 @@ def _hint_score(h, deps, expert: str, hint: str, item: dict, cfg: dict) -> float
     return good / n if n else 0.0
 
 
-def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None]) -> dict:
+def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Callable[[str], None],
+                   is_cancelled: Callable[[], bool] = lambda: False) -> dict:
     """同一批专家问题，分别用旧 / 新搜索侧重生成搜索词并真实搜索，比较带回来的结果里可用的占比。"""
     expert = run.diff["hint"]["expert"]
     issues = ledger.get_issues(run.issue_ids)
@@ -379,6 +389,8 @@ def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: 
         per: dict[str, list[float]] = {k: [] for k in live if live[k]}
         before = h.budget.used.get("tokens", 0)
         for rep in range(REPEATS):
+            if is_cancelled():                              # 取消检查点：每轮真实搜索之间
+                raise TaskCancelled("评测作业已取消（进度已保留，可重新评测）")
             for name in per:
                 per[name].append(mean(_hint_score(h, deps, expert, hint, it, {**deps.policy.search, **cfg}) for it in live[name]))
             log(f"S3 评测 {arm} 第 {rep + 1}/{REPEATS} 轮完成")

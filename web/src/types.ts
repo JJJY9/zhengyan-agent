@@ -173,7 +173,7 @@ export interface RsiOverview {
   inheritance: { versions: Versions; dossiers: number; lessons_used: string[]; last: string }[];
   self_approved: number;
 }
-export interface RsiJob { job_id: string; kind: string; status: "running" | "done" | "failed"; log: string[]; result: string | null; error: string | null }
+export interface RsiJob { job_id: string; kind: string; status: "running" | "done" | "failed" | "cancelled"; log: string[]; result: string | null; error: string | null }
 
 // ---------- 三期：用户确认档案、个人情境官、订阅与增量复核 ----------
 export interface RiskProfile { max_drawdown_pct: number | null; horizon_months: number | null; liquidity_note: string }

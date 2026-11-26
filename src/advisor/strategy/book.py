@@ -83,10 +83,16 @@ class StrategyBook:
         start = start or date.today()
         return self._move(v, "paper", "paper", actor, f"从 {start} 开始前向模拟（不回填历史）", paper_start=start)
 
-    def step_all(self, day: date | None = None, log: Callable[[str], None] = lambda m: None) -> list[NavPoint]:
+    def step_all(self, day: date | None = None, log: Callable[[str], None] = lambda m: None,
+                 is_cancelled: Callable[[], bool] = lambda: False) -> list[NavPoint]:
         day = day or date.today()
         out = []
+        from advisor.harness import TaskCancelled
+        if is_cancelled():                      # 取消检查点：开工前与每张策略卡之间
+            raise TaskCancelled("推进作业已取消")
         for v in self.store.versions(status=["paper", "review", "promoted"]):
+            if is_cancelled():
+                raise TaskCancelled("推进作业已取消")
             if v.paper_start and day < v.paper_start:
                 continue
             try:

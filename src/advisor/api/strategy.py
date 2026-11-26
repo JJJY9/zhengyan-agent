@@ -74,7 +74,8 @@ def step(svc: Svc, jobs: Jobs, day: date | None = None):
     """把所有模拟中的策略推进到今天（只能向前）。"""
     # 去重键带上日期：已有别的日期的推进在跑时，不能把本次日期静默丢弃
     key = f"strategy:step:{day.isoformat() if day else 'today'}"
-    return jobs.start(svc, "paper_step", lambda log: len(svc.strategy.step_all(day, log)), key=key)
+    return jobs.start(svc, "paper_step",
+                      lambda log, cancelled: len(svc.strategy.step_all(day, log, is_cancelled=cancelled)), key=key)
 
 
 @router.post("/{card_id}/{version}/submit")
