@@ -10,6 +10,8 @@ services:
   mongo:
     image: mongo:7
     container_name: advisor-mongo
+    environment:
+      MONGO_DB: ${MONGO_DB:-advisor}    # 首次启动的演示数据导入目标库，与 app 保持一致
     ports:
       - "127.0.0.1:27017:27017"      # 只给本机开发用（宿主机直接跑 advisor 时连这里）
     volumes:

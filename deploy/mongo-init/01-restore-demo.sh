@@ -4,7 +4,8 @@
 set -e
 ARCHIVE=/docker-entrypoint-initdb.d/demo-data.archive.gz
 if [ -f "$ARCHIVE" ]; then
-  echo "[advisor] 导入演示数据 ..."
-  mongorestore --quiet --gzip --archive="$ARCHIVE" --nsInclude='advisor.*'
+  NS_DB="${MONGO_DB:-advisor}"        # 与 app 的 MONGO_DB 保持一致：改库名时演示数据不能导入旧库
+  echo "[advisor] 导入演示数据到 ${NS_DB} ..."
+  mongorestore --quiet --gzip --archive="$ARCHIVE" --nsFrom='advisor.*' --nsTo="${NS_DB}.*"
   echo "[advisor] 演示数据导入完成"
 fi
