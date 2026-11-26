@@ -432,8 +432,14 @@ class Nodes:
         )
         evidence = {c.id: c for c in _cards(state)}
         for attempt in range(3):
-            # 同 key 并发提交会同时算出版本号：撞唯一索引就重算版本、重渲染报告后重试
-            dossier = dossier.model_copy(update={"version": (self.d.repo.latest_dossier_version(key) or 0) + 1})
+            # 同 key 并发提交会同时算出版本号与父版本：撞唯一索引后两者都要按当前库重算，
+            # 否则重试后的新版本挂着旧 parent，版本链分叉、diff 基准错位
+            new_parent = self.d.repo.latest_dossier_version_at(key, as_of)
+            if new_parent != dossier.parent_version:
+                self._event(state, "commit",
+                            f"并发提交检测：上一版本由 v{dossier.parent_version} 变为 v{new_parent}，已按最新版本续链")
+            dossier = dossier.model_copy(update={"version": (self.d.repo.latest_dossier_version(key) or 0) + 1,
+                                                 "parent_version": new_parent})
             report = render_report(dossier, evidence, Budget.from_dict(state["budget"]))
             dossier = dossier.model_copy(update={"report_md": report})
             if self.d.repo.try_insert_dossier(dossier):
