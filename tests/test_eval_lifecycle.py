@@ -19,9 +19,9 @@ def test_compare_running_doc_has_provisional_verdict_only(repo, policy):
     seen: list[dict] = []
     real = repo.save_eval
 
-    def spy(run):
+    def spy(run, **kw):
         seen.append({**run, "results": list(run.get("results") or [])})
-        return real(run)
+        return real(run, **kw)
 
     repo.save_eval = spy
     try:

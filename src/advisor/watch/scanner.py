@@ -241,7 +241,8 @@ class Watcher:
 
     def sync(self) -> None:
         """复核任务结束后回写提醒状态；进程崩溃遗留的僵尸任务先标记失败，提醒随之解锁。"""
-        self.deps.repo.recover_stale_tasks(RECOVER_AGE_S)
+        self.deps.repo.recover_stale_tasks(RECOVER_AGE_S,
+                                          exclude_instance=getattr(self.deps, "instance", None))
         for a in self.store.list_alerts(status="reviewing"):
             if a.review_task_id == "pending":   # 领取后正在创建任务：活租约不论多久都等，死租约给 120s 宽限
                 if a.review_instance and self.deps.repo.lease_alive(a.review_instance):

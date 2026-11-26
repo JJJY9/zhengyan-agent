@@ -102,10 +102,10 @@ def test_compare_failure_marks_interrupted_verdict(repo, policy):
     svc = make_service(repo, policy)
     real_save = repo.save_eval
 
-    def flaky(doc):
+    def flaky(doc, **kw):
         if doc.get("status") == "running" and doc.get("results"):
             raise RuntimeError("存储瞬时不可用")
-        return real_save(doc)
+        return real_save(doc, **kw)
 
     repo.save_eval = flaky
     try:
@@ -125,8 +125,9 @@ def test_scheduler_periodic_zombie_recovery(monkeypatch):
     calls = {"tasks": 0, "evals": 0}
 
     class R:
-        def recover_stale_tasks(self, age, lease_ttl_s=180.0):
+        def recover_stale_tasks(self, age, lease_ttl_s=180.0, exclude_instance=None):
             calls["tasks"] += 1
+            calls["exclude"] = exclude_instance
 
         def recover_stale_evals(self, *a, **k):
             calls["evals"] += 1
@@ -140,7 +141,8 @@ def test_scheduler_periodic_zombie_recovery(monkeypatch):
             return []
 
     monkeypatch.setattr(Scheduler, "FAST_TICK_S", 0.05)
-    sch = Scheduler(SimpleNamespace(deps=SimpleNamespace(repo=R()), watch=W(), strategy=S()), interval_hours=100)
+    sch = Scheduler(SimpleNamespace(deps=SimpleNamespace(repo=R(), instance="inst_me"), watch=W(), strategy=S()),
+                    interval_hours=100)
     sch.start()
     try:
         deadline = time.time() + 5
@@ -149,3 +151,4 @@ def test_scheduler_periodic_zombie_recovery(monkeypatch):
     finally:
         sch.stop()
     assert calls["tasks"] >= 2 and calls["evals"] >= 2            # 快 tick 独立于扫描间隔
+    assert calls["exclude"] == "inst_me"                          # 回收方必须排除自己

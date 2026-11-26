@@ -128,7 +128,8 @@ function CompareView({ run }: { run: EvalRun }) {
   return (
     <div>
       {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
-      {v && v.decision === "insufficient" && run.status !== "running" && (   // 运行中不判「不完整」
+      {v && v.decision === "insufficient" && run.status !== "running"
+        && (!v.provisional || run.status === "failed") && (   // 运行中不判「不完整」；失败行显示中断结论
         <div className="card warnbox">
           <div>
             <h3>{v.text}</h3>
@@ -139,7 +140,7 @@ function CompareView({ run }: { run: EvalRun }) {
           </div>
         </div>
       )}
-      {v && v.decision !== "insufficient" && run.status !== "running" && (   // 运行中不给最终结论
+      {v && v.decision !== "insufficient" && run.status !== "running" && !v.provisional && (   // 运行中不给最终结论
         <div className={`card ${v.decision === "adopt_multi_expert" ? "success" : "warnbox"}`}>
           <div>
             <h3>{v.text}</h3>

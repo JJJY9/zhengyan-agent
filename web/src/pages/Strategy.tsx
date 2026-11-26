@@ -49,8 +49,8 @@ export default function Strategy() {
       if (maxPos === null || !Number.isInteger(maxPos) || maxPos < 1 || maxPos > 20) {
         setError("最多持有必须是 1–20 的整数"); setBusy(false); return;
       }
-      if (stop === null || stop < 0 || stop > 100) {
-        setError("止损 % 必须是 0–100 的数字"); setBusy(false); return;
+      if (stop === null || stop <= 0 || stop > 80) {   // 后端约束 gt=0 le=80：前端同口径
+        setError("止损 % 必须是 (0,80] 的数字"); setBusy(false); return;
       }
       if (mdd === null || mdd <= 0 || mdd > 100) {
         setError("晋级回撤上限 % 必须是 (0,100] 的数字"); setBusy(false); return;
@@ -96,7 +96,7 @@ export default function Strategy() {
               <RuleEditor rules={form.exit} fields={ov.fields} onChange={(exit) => setForm({ ...form, exit })} /></div>
             <div className="stat-row" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
               <label>最多持有<input type="number" min={1} max={20} value={form.max_positions} onChange={(e) => setForm({ ...form, max_positions: e.target.value })} /></label>
-              <label>止损 %<input type="number" value={form.stop_loss_pct} onChange={(e) => setForm({ ...form, stop_loss_pct: e.target.value })} /></label>
+              <label>止损 %<input type="number" min={1} max={80} value={form.stop_loss_pct} onChange={(e) => setForm({ ...form, stop_loss_pct: e.target.value })} /></label>
               <label>晋级回撤上限 %<input type="number" value={form.max_drawdown_limit} onChange={(e) => setForm({ ...form, max_drawdown_limit: e.target.value })} /></label>
             </div>
             <label>改动理由（不少于 10 个字）<input value={form.change_reason} onChange={(e) => setForm({ ...form, change_reason: e.target.value })} /></label>
