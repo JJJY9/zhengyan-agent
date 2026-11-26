@@ -125,6 +125,7 @@ function CompareView({ run }: { run: EvalRun }) {
   const s = run.summary;
   const routes = run.routes ?? [];
   const v = s?.verdict;
+  const hasSummary = !!s?.routes && Object.keys(s.routes).length > 0;
   return (
     <div>
       {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
@@ -135,7 +136,9 @@ function CompareView({ run }: { run: EvalRun }) {
             <h3>{v.text}</h3>
             <div className="small">
               {v.failed_cases != null && <>失败用例 <b>{v.failed_cases}</b> 个；</>}
-              下方均值只统计成功用例（幸存者偏差），评测不完整时不能据此判定不退化
+              {hasSummary
+                ? "下方均值只统计成功用例（幸存者偏差），评测不完整时不能据此判定不退化"
+                : "本次评测没有可参考的汇总均值"}
             </div>
           </div>
         </div>
@@ -152,7 +155,7 @@ function CompareView({ run }: { run: EvalRun }) {
         </div>
       )}
       {run.status === "running" && <p className="muted"><span className="spinner inline" /> 评测进行中：已完成 {run.results?.length ?? 0} / {(run.cases?.length ?? 0) * routes.length}</p>}
-      {s?.routes && Object.keys(s.routes).length > 0 && (   // summary 可能只有 verdict（失败/中断行）
+      {hasSummary && (   // summary 可能只有 verdict（失败/中断行）
         <div className="card">
           <h3>汇总（均值）</h3>
           <table className="table">

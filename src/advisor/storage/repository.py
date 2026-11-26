@@ -358,41 +358,56 @@ class Repository:
     def _fail_eval_docs(self, docs: list[dict], reason: str) -> int:
         """把 running 评测逐条标 failed，并把临时结论改写为「中断」：失败行不能再显示「进行中」。
 
-        summary 一律写完整形状（routes 至少为空映射）：点路径只写 verdict 会造出缺 routes 的残缺
-        summary，前端汇总表按 s.routes 取键会整页崩溃。
+        summary.routes 只在缺失时补种空映射（前端汇总表按 s.routes 取键，缺了会整页崩溃），
+        但绝不覆盖并发 worker 已写入的真实 routes——用调用方 find 快照整段覆写会把进度打回旧值。
+        verdict 走点路径，例数取更新前最近一次读到的 results 长度（快照语义，最多滞后一例）。
         """
         n = 0
         for d in docs:
-            summary = dict(d.get("summary") or {})
-            summary.setdefault("routes", {})
-            summary["verdict"] = self._interrupted_verdict(len(d.get("results") or []))
+            self.db.eval_runs.update_one(
+                {"run_id": d["run_id"], "status": "running", "summary.routes": {"$exists": False}},
+                {"$set": {"summary.routes": {}}},
+            )
+            cur = self.db.eval_runs.find_one({"run_id": d["run_id"]}, projection={"results": 1})
+            done_n = len((cur or {}).get("results") or [])
             n += self.db.eval_runs.update_one(
                 {"run_id": d["run_id"], "status": "running"},
                 {"$set": {"status": "failed", "updated_at": _now(), "error": reason,
-                          "summary": summary}},
+                          "summary.verdict": self._interrupted_verdict(done_n)}},
             ).modified_count
         return n
 
     def recover_stale_evals(self, max_age_s: float = 3600, lease_ttl_s: float = 180.0) -> int:
-        """回收僵尸评测：所属进程租约已死的 running 评测立即标 failed；
-        历史无 instance 的文档退回按停滞时长（进度每例刷新 updated_at）。"""
+        """回收僵尸评测。
+
+        租约已死 → 立即回收；租约仍活但「已开跑且长时间无进展」→ 停滞兜底回收。
+        排队未开跑的评测不按年龄回收：预创建文档显式 started_at=None，排队期间没有任何写入
+        刷新 updated_at，按年龄会误杀仍在排队的活作业——这类只信租约。历史文档没有
+        started_at 字段（旧版本创建）按「已开跑」处理，保留原有停滞兜底。
+        """
         cutoff = _now() - timedelta(seconds=max_age_s)
-        stale: list[dict] = []
+        dead: list[dict] = []
+        stalled: list[dict] = []
         alive: dict[str, bool] = {}
         for d in self.db.eval_runs.find({"status": "running"},
                                         projection={"run_id": 1, "instance": 1, "updated_at": 1,
-                                                    "results": 1, "summary": 1}):
+                                                    "results": 1, "summary": 1, "started_at": 1}):
             inst = d.get("instance")
-            stalled = bool(d.get("updated_at") and d["updated_at"] < cutoff)
+            started = d.get("started_at") if "started_at" in d else True   # 旧文档缺字段：视为已开跑
+            stall_flag = bool(started is not None and d.get("updated_at") and d["updated_at"] < cutoff)
             if inst:
                 if inst not in alive:
                     alive[inst] = self.lease_alive(inst, lease_ttl_s)
-                if alive[inst] and not stalled:
-                    continue                      # 进程还活着且仍有进展
-            elif not stalled:
-                continue                          # 历史无 instance：退回按停滞时长
-            stale.append(d)
-        return self._fail_eval_docs(stale, "评测所属进程已不在，已标记失败；可重新发起")
+                if alive[inst]:
+                    if stall_flag:
+                        stalled.append(d)       # 进程活着但作业停滞（首笔异常/挂死）
+                    continue
+            elif not stall_flag:
+                continue                          # 历史无 instance 且无停滞：保留
+            dead.append(d)
+        n = self._fail_eval_docs(dead, "评测所属进程已不在，已标记失败；可重新发起")
+        n += self._fail_eval_docs(stalled, "评测停滞超过时限且无进展，已标记失败；可重新发起")
+        return n
 
     def fail_instance_evals(self, instance: str, reason: str) -> int:
         """优雅停机：本实例登记且未完成的评测直接标 failed（排队作业已被取消）。"""

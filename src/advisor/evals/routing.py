@@ -49,6 +49,7 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
     # 金标文件读取也放进 try：读失败同样要落 failed，不能把 running 挂着（后台异常会被线程池吞掉）
     running_doc = {"run_id": run_id, "type": "routing", "status": "running",
                    "created_at": datetime.now(timezone.utc),
+                   "started_at": datetime.now(timezone.utc),
                    "instance": getattr(deps, "instance", None)}
     try:
         existing = repo.get_eval(run_id)
@@ -57,6 +58,7 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
                 return run_id              # 已被停机/回收判终态：不复活
             running_doc = existing
             running_doc.setdefault("instance", getattr(deps, "instance", None))
+            running_doc["started_at"] = datetime.now(timezone.utc)   # 出队认领
             if not repo.save_eval(running_doc, only_if_running=True):
                 return run_id
         else:

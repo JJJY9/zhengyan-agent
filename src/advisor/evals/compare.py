@@ -73,6 +73,7 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
     run = {"run_id": run_id, "type": "compare", "status": "running", "routes": routes, "cases": cases,
            "results": [],
            "instance": getattr(getattr(svc, "research", None) or svc, "instance", None),
+           "started_at": datetime.now(timezone.utc),
            "created_at": datetime.now(timezone.utc)}
     try:
         existing = repo.get_eval(run_id)
@@ -83,6 +84,7 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
             run.update(status="running", routes=routes, cases=cases,
                        instance=run.get("instance") or getattr(getattr(svc, "research", None) or svc, "instance", None))
             run.setdefault("results", [])
+            run["started_at"] = datetime.now(timezone.utc)     # 出队认领：停滞兜底只对已开跑文档生效
             if not repo.save_eval(run, only_if_running=True):
                 return run_id              # 认领失败（并发终态）：放弃执行
         else:

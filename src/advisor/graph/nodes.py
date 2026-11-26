@@ -432,16 +432,21 @@ class Nodes:
         )
         evidence = {c.id: c for c in _cards(state)}
         prior_v = (state.get("prior") or {}).get("version")
+
+        def _drift_note(old_version, new_version):
+            """并发漂移注记：父版本为空时绝不打印 vNone；prior_review 基准只在研究期有对照时说明。"""
+            if old_version is None:
+                return (f"并发提交：研究开始时无上一版本，提交时已有 v{new_version}，"
+                        "已按最新版本续链；本档案未做上一版本对照")
+            note = (f"并发提交：上一版本在本任务研究期间由 v{old_version} 变为 v{new_version}，"
+                    "已按最新版本续链")
+            if prior_v is not None and dossier.prior_review:
+                note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+            return note
+
         if dossier.parent_version != prior_v:
             # 研究开始载入的对照版本与提交快照不一致：即便首次插入成功也要在档案里自述
-            if prior_v is None:
-                note = (f"并发提交：研究开始时无上一版本，提交时已有 v{dossier.parent_version}，"
-                        "已按最新版本续链；本档案未做上一版本对照")
-            else:
-                note = (f"并发提交：上一版本在本任务研究期间由 v{prior_v} 变为 v{dossier.parent_version}，"
-                        "已按最新版本续链")
-                if dossier.prior_review:
-                    note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+            note = _drift_note(prior_v, dossier.parent_version)
             self._event(state, "commit", note)
             dossier = dossier.model_copy(update={"boundary_notes": [*dossier.boundary_notes, note]})
         for attempt in range(3):
@@ -449,10 +454,7 @@ class Nodes:
             # 否则重试后的新版本挂着旧 parent，版本链分叉、diff 基准错位
             new_parent = self.d.repo.latest_dossier_version_at(key, as_of)
             if new_parent != dossier.parent_version:
-                note = (f"并发提交：上一版本在本任务研究期间由 v{dossier.parent_version} 变为 v{new_parent}，"
-                        "已按最新版本续链")
-                if prior_v is not None and dossier.prior_review:
-                    note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+                note = _drift_note(dossier.parent_version, new_parent)
                 self._event(state, "commit", note)
                 dossier = dossier.model_copy(update={"boundary_notes": [*dossier.boundary_notes, note]})
             dossier = dossier.model_copy(update={"version": (self.d.repo.latest_dossier_version(key) or 0) + 1,
