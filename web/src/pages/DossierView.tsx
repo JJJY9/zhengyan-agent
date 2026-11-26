@@ -33,8 +33,10 @@ export default function DossierView() {
     let alive = true;
     api.versions(key).then((vs) => {
       if (!alive) return;
-      setVersions(vs);
-      if (!version && vs.length) nav(`/dossiers/${key}/${vs[0].version}`, { replace: true });
+      // 默认落在「当前档案」：按 (as_of, 版本) 取最新——回填产生的高版本旧档案不能顶替当前版本
+      const ordered = [...vs].sort((a, b) => (a.as_of === b.as_of ? b.version - a.version : b.as_of.localeCompare(a.as_of)));
+      setVersions(ordered);
+      if (!version && ordered.length) nav(`/dossiers/${key}/${ordered[0].version}`, { replace: true });
     }).catch((e) => { if (alive) setError({ msg: e.message, at: `${key}/` }); });
     return () => { alive = false; };
   }, [key, version, nav]);
