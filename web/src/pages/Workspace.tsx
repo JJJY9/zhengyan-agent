@@ -79,8 +79,9 @@ export default function Workspace() {
               ))}
               {review.map((r) => (
                 <Link key={r.run_id} to={`/rsi/runs/${r.run_id}`} className="focus-item">
-                  <span className="badge st-review">待你审批</span><span className="fi-title">{r.change_reason}</span>
-                  <span className="fi-sub">六道门控已通过，发布前必须由你批准</span>
+                  <span className={`badge ${r.status === "approved" ? "st-approved" : "st-review"}`}>{r.status === "approved" ? "已批准 · 待发布" : "待你审批"}</span>
+                  <span className="fi-title">{r.change_reason}</span>
+                  <span className="fi-sub">{r.status === "approved" ? "已批准，去运行页执行发布" : "六道门控已通过，发布前必须由你批准"}</span>
                 </Link>
               ))}
               {alerts.map((a) => (

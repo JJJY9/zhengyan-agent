@@ -13,12 +13,18 @@ router = APIRouter(prefix="/api")
 
 
 def all_evidence_ids(d: Dossier) -> list[str]:
+    """档案页面会展示的全部证据引用闭包：缺了哪类引用，对应的证据芯片点开就是空的。"""
     ids = set(d.evidence_ids) | {i for c in d.claims for i in c.evidence_ids}
+    ids |= {i for x in d.dissents for i in x.evidence_ids}
+    ids |= {i for p in d.prior_review for i in p.evidence_ids}
     dl = d.deliberation or {}
     for t in dl.get("team", []):
         ids |= set(t.get("own_evidence_ids", [])) | {i for c in t.get("claims", []) for i in c.get("evidence_ids", [])}
     for ch in dl.get("challenges", []):
         ids |= set(ch.get("evidence_ids", []))
+    for r in dl.get("responses", []):
+        ids |= set(r.get("evidence_ids", []))
+        ids |= set((r.get("revised_claim") or {}).get("evidence_ids", []))
     return sorted(ids)
 
 

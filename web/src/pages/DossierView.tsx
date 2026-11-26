@@ -45,6 +45,8 @@ export default function DossierView() {
     setData(null);        // 切版本先清空：旧版本的慢响应不得覆盖新版本
     setDiff(null);
     setError(null);
+    setTab("overview");   // 旧 tab（差异/专家）在新版本可能不存在，回落概览
+    setFocus(null);
     api.dossier(key, Number(version)).then((d) => {
       if (!alive) return;
       setData(d);
@@ -143,7 +145,7 @@ export default function DossierView() {
             <p className="muted small">问题：{d.question}</p>
             {d.boundary_notes.map((n, i) => <div key={i} className="notice">{n}</div>)}
           </section>
-          <PersonalPanel ticker={d.ticker} />
+          <PersonalPanel ticker={d.ticker} version={d.version} />
 
           {d.routing && <RoutingCard r={d.routing} />}
 

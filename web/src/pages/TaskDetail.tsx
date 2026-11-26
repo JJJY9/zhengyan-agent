@@ -20,6 +20,7 @@ export default function TaskDetail() {
   const [work, setWork] = useState<WorkingItem[]>([]);
   const [audit, setAudit] = useState<AuditRecord[] | null>(null);
   const [error, setError] = useState<{ msg: string; id: string } | null>(null);
+  const [actionErr, setActionErr] = useState("");
   const [tick, setTick] = useState(0);
   const taskRef = useRef<Task | null>(null);
 
@@ -39,6 +40,7 @@ export default function TaskDetail() {
         setTask(t);
         setWork(w);
         if (ACTIVE.has(t.status)) timer = window.setTimeout(load, 2000);
+        else if (t.status === "waiting_approval") timer = window.setTimeout(load, 5000);   // 跨页面审批后卡片能自己更新
       } catch (e) {
         if (!alive) return;
         if (!taskRef.current) setError({ msg: (e as Error).message, id });   // 首屏失败：错误页
@@ -50,12 +52,14 @@ export default function TaskDetail() {
   }, [id, tick]);
 
   const decide = async (approve: boolean) => {
-    await api.resume(id, approve);
+    setActionErr("");
+    try { await api.resume(id, approve); } catch (e) { setActionErr((e as Error).message); }
     setTimeout(() => setTick((x) => x + 1), 800);
   };
   const cancel = async () => {
     if (!confirm("撤销授权并停止这个任务？已完成的步骤不会回滚，未提交的结论不会写入档案。")) return;
-    await api.cancel(id);
+    setActionErr("");
+    try { await api.cancel(id); } catch (e) { setActionErr((e as Error).message); }
     setTick((x) => x + 1);
   };
   const openAudit = async () => {
@@ -93,22 +97,28 @@ export default function TaskDetail() {
         <div className="kv"><span>任务编号</span><span className="muted small">{task.task_id}</span></div>
       </div>
 
-      {task.status === "waiting_approval" && task.interrupt && (
+      {task.status === "waiting_approval" && task.interrupt && (() => {
+        const it = task.interrupt!;
+        const expired = !!(it.ttl_s && it.issued_at && Date.now() / 1000 > it.issued_at + it.ttl_s);
+        return (
         <div className="card approval">
-          <h3>{task.interrupt.type === "review" ? "人工复核：高后果争议未解决" : task.interrupt.type === "approval" ? "调用审批" : "需要你确认"}</h3>
-          <p>{task.interrupt.message}</p>
+          <h3>{it.type === "review" ? "人工复核：高后果争议未解决" : it.type === "approval" ? "调用审批" : "需要你确认"}</h3>
+          <p>{it.message}</p>
           {task.interrupt.items && task.interrupt.items.length > 0 && <ul>{task.interrupt.items.map((x, i) => <li key={i}>{x}</li>)}</ul>}
           {task.interrupt.type === "approval" && (
             <p className="muted small">审批绑定 {task.interrupt.skill} v{task.interrupt.version} 与本次参数，{task.interrupt.ttl_s}s 内有效；参数或版本变化即失效。</p>
           )}
+          {expired && <div className="warn-text">审批已过期（超过 {it.ttl_s}s）：此时点同意会被按拒绝处理，请点「拒绝并停止」后重新发起任务。</div>}
+          {actionErr && <div className="error">{actionErr}</div>}
           <div className="row-btns">
-            <button className="primary" onClick={() => decide(true)}>
-              {task.interrupt.type === "review" ? "确认以部分结论提交" : "同意，继续"}
+            <button className="primary" disabled={expired} onClick={() => decide(true)}>
+              {it.type === "review" ? "确认以部分结论提交" : "同意，继续"}
             </button>
-            <button onClick={() => decide(false)}>{task.interrupt.type === "review" ? "不提交" : "拒绝并停止"}</button>
+            <button onClick={() => decide(false)}>{it.type === "review" ? "不提交" : "拒绝并停止"}</button>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {task.status === "done" && task.result && (
         <div className="card success">
