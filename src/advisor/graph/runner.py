@@ -23,13 +23,18 @@ class PoolSaturated(RuntimeError):
 class ResearchService:
     MAX_PENDING = 64
 
-    def __init__(self, deps: Deps, checkpointer, max_workers: int = 3, max_pending: int | None = None):
+    def __init__(self, deps: Deps, checkpointer, max_workers: int = 3, max_pending: int | None = None,
+                 side_workers: int = 2):
         self.deps = deps
         self.graph = build_graph(deps, checkpointer)
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="research")
         self.max_pending = self.MAX_PENDING if max_pending is None else max_pending
         self._gate = threading.Lock()
         self._pending = 0
+        # RSI/评测等后台作业的独立线程池与队列：长时间评测不能占满交互研究的 3 个线程与排队名额
+        self._side_pool = ThreadPoolExecutor(max_workers=side_workers, thread_name_prefix="sidejob")
+        self._side_gate = threading.Lock()
+        self._side_pending = 0
         self.guard = EgressGuard(
             deps.policy.egress.get("sensitive_patterns", []), deps.policy.egress.get("trade_intent_patterns", [])
         )
@@ -125,13 +130,34 @@ class ResearchService:
         return status
 
     def submit(self, fn, *args):
-        """在研究线程池里执行后台作业（评测、RSI、订阅扫描等）；队列满时拒绝而不是无限积压。"""
+        """在研究线程池里执行后台作业；队列满时拒绝而不是无限积压。"""
         self._acquire_or_raise()
         try:
             return self._pool.submit(self._guarded, fn, *args)
         except RuntimeError:
             self._release()
             raise
+
+    def submit_side(self, fn, *args):
+        """侧栏作业（RSI 提议/评测、订阅扫描、模拟盘推进）走独立线程池：
+        再长的评测也只占自己的名额，交互研究照常可以发起（取消通道仍待做，见迭代记录）。"""
+        with self._side_gate:
+            if self._side_pending >= self.max_pending:
+                raise PoolSaturated(f"后台作业队列已满（最多 {self.max_pending} 个排队/运行），请稍后再试")
+            self._side_pending += 1
+        try:
+            return self._side_pool.submit(self._guard_side, fn, *args)
+        except RuntimeError:
+            with self._side_gate:
+                self._side_pending = max(self._side_pending - 1, 0)
+            raise
+
+    def _guard_side(self, fn, *args):
+        try:
+            fn(*args)
+        finally:
+            with self._side_gate:
+                self._side_pending = max(self._side_pending - 1, 0)
 
     def _submit(self, task_id: str, payload: Any, background: bool) -> None:
         """调用前必须已 _acquire_or_raise()；名额由 _guarded 在作业结束时释放。"""
