@@ -38,7 +38,7 @@ export default function Watch() {
   const scanAll = () => act("scan", async () => {
     const { job_id } = await api.watch.scanAll();
     const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "扫描中…"), () => !alive.current);
-    setLog(j.log.join("；") || "没有订阅");
+    setLog(j.status === "failed" ? `扫描失败：${j.error ?? "未知原因"}` : (j.log.join("；") || "所有订阅均无变化"));
   });
   const review = (a: Alert) => act(a.id, async () => { const { task_id } = await api.watch.review(a.id); nav(`/tasks/${task_id}`); });
 

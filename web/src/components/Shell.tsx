@@ -239,7 +239,7 @@ function AskPanel({ ctx, onClose, turns, onSubmit, onDone, onClear }: {
   const send = async (text = q) => {
     if (text.trim().length < 2 || busy) return;
     setBusy(true); setErr("");
-    try { await onSubmit(text.trim(), route, asOf); setQ(""); } catch (e) { setErr((e as Error).message); }
+    try { await onSubmit(text.trim(), route, asOf || today()); setQ(""); } catch (e) { setErr((e as Error).message); }
     setBusy(false);
   };
   return (

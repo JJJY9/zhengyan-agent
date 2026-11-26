@@ -17,13 +17,17 @@ export default function Profile() {
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [loadErr, setLoadErr] = useState("");
   useAskContext({ title: "我的约束", suggestions: ["合同负债大幅下降一定说明需求走弱吗？"] }, []);
 
-  const load = () => api.profile.get().then((s) => {
-    setState(s);
-    setRisk(s.current?.risk ?? EMPTY_RISK);
-    setHoldings(s.current?.holdings ?? []);
-  });
+  const load = () => {
+    setLoadErr("");
+    api.profile.get().then((s) => {
+      setState(s);
+      setRisk(s.current?.risk ?? EMPTY_RISK);
+      setHoldings(s.current?.holdings ?? []);
+    }).catch((e) => setLoadErr((e as Error).message));   // 失败不能伪装成「还没有约束」
+  };
   useEffect(() => { load(); }, []);
 
   const setH = (i: number, patch: Partial<Holding>) => setHoldings((hs) => hs.map((h, k) => (k === i ? { ...h, ...patch } : h)));
@@ -74,12 +78,13 @@ export default function Profile() {
           <label className="check"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
             我确认以上信息由我本人填写。系统不会替我填写或修改这些约束。</label>
           {msg && <div className={msg.ok ? "muted" : "error"}>{msg.text}</div>}
-          <button className="primary" style={{ alignSelf: "flex-start" }} disabled={!confirmed} onClick={save}>确认并保存新版本</button>
+          <button className="primary" style={{ alignSelf: "flex-start" }} disabled={!confirmed || !state || !!loadErr} onClick={save}>确认并保存新版本</button>
         </section>
 
         <h2>版本记录</h2>
         <section className="card">
-          {!state?.history.length ? <div className="empty">还没有确认过任何约束。没确认的，个人情境官一律标「未知」。</div> : (
+          {loadErr ? <div className="error">约束加载失败：{loadErr}</div> : !state ? <div className="muted">加载中…</div> :
+            !state.history.length ? <div className="empty">还没有确认过任何约束。没确认的，个人情境官一律标「未知」。</div> : (
             <div className="pv-list">
               {state.history.map((h, i) => <ProfileVersionView key={h.version} v={h} prev={state.history[i + 1]} current={i === 0} />)}
             </div>

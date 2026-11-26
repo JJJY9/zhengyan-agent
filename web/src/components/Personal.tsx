@@ -39,13 +39,16 @@ export function FitList({ fit }: { fit: PersonalFit }) {
 }
 
 /** 档案页里的「个人情境」卡：对照你确认过的约束，附订阅入口。 */
-export function PersonalPanel({ ticker }: { ticker: string }) {
+export function PersonalPanel({ ticker, version }: { ticker: string; version?: number }) {
   const [fit, setFit] = useState<PersonalFit | null>(null);
+  const [fitErr, setFitErr] = useState("");
   const [change, setChange] = useState<(ProfileImpact & { profile_version: number }) | null>(null);
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [msg, setMsg] = useState("");
   const load = () => {
-    api.profile.fit(ticker).then((r) => { setFit(r.fit); setChange(r.profile_change); }).catch(() => setFit(null));
+    setFitErr("");
+    api.profile.fit(ticker).then((r) => { setFit(r.fit); setChange(r.profile_change); })
+      .catch((e) => { setFit(null); setFitErr((e as Error).message); });
     api.watch.overview().then((w) => setSubscribed(w.subscriptions.some((s) => s.ticker === ticker && s.active))).catch(() => undefined);
   };
   useEffect(load, [ticker]);
@@ -72,7 +75,13 @@ export function PersonalPanel({ ticker }: { ticker: string }) {
           <span className="muted small">档案里的研究结论不依赖你的约束，不需要重新研究；需要重新判断的是它和你的情况是否还相容。</span>
         </div>
       )}
-      <div style={{ marginTop: 10 }}>{fit ? <FitList fit={fit} /> : <span className="muted">加载中…</span>}</div>
+      <div style={{ marginTop: 10 }}>
+        {fit && version !== undefined && fit.dossier_version !== version ? (
+          <span className="muted">该面板基于最新档案 v{fit.dossier_version}；正在查看的 v{version} 没有对应的个人情境判断。</span>
+        ) : fit ? <FitList fit={fit} /> : (
+          <span className="muted">{fitErr ? `个人情境加载失败：${fitErr}` : "加载中…"}</span>
+        )}
+      </div>
     </section>
   );
 }

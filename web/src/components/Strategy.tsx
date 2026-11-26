@@ -23,11 +23,17 @@ export function RuleEditor({ rules, fields, onChange }: { rules: Rule[]; fields:
     <div className="form" style={{ gap: 6 }}>
       {rules.map((r, i) => (
         <div key={i} className="rule-row">
-          <select value={r.field} onChange={(e) => set(i, { field: e.target.value })}>
+          <select value={r.field} onChange={(e) => {
+            const f = e.target.value;
+            // 字段类型不同：status 用字符串枚举，其余是数值——切字段时重置阈值，避免旧值恰好恒真/恒假
+            set(i, { field: f, value: f === "status" ? "committed" : 50 });
+          }}>
             {Object.entries(fields).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
           </select>
           <select value={r.op} onChange={(e) => set(i, { op: e.target.value as Rule["op"] })}>{OPS.map((o) => <option key={o}>{o}</option>)}</select>
-          <input value={String(r.value)} onChange={(e) => set(i, { value: r.field === "status" ? e.target.value : e.target.value === "" ? "" : Number(e.target.value) })} />
+          {r.field === "status"
+            ? <input value={String(r.value)} onChange={(e) => set(i, { value: e.target.value })} />
+            : <input type="number" value={Number(r.value)} onChange={(e) => set(i, { value: Number(e.target.value || 0) })} />}
           <button className="ghost" onClick={() => onChange(rules.filter((_, k) => k !== i))} aria-label="删除规则">删除</button>
         </div>
       ))}

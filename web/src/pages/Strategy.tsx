@@ -30,18 +30,19 @@ export default function Strategy() {
     try {
       const { job_id } = await api.strategy.step();
       const j = await waitJob(job_id, (x) => setLog(x.log[x.log.length - 1] ?? "推进中…"), () => !alive.current);
-      setLog(j.log.join("；") || "没有模拟中的策略");
+      setLog(j.status === "failed" ? `推进失败：${j.error ?? "未知原因"}` : (j.log.join("；") || "没有模拟中的策略"));
     } catch (e) { setError((e as Error).message); }
     setBusy(false); load();
   };
   const create = async () => {
-    if (!form) return;
+    if (!form || busy) return;                       // 双击创建两张卡：提交期间禁止重入
+    setBusy(true);
     setError("");
     try {
       const { universe, ...rest } = form;
       const v = await api.strategy.create({ ...rest, universe: universe.split(/[,，\s]+/).filter(Boolean) });
       nav(`/strategy/${v.card_id}/${v.version}`);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { setError((e as Error).message); setBusy(false); }
   };
 
   return (
@@ -75,7 +76,7 @@ export default function Strategy() {
             </div>
             <label>改动理由（不少于 10 个字）<input value={form.change_reason} onChange={(e) => setForm({ ...form, change_reason: e.target.value })} /></label>
             <div className="row-btns" style={{ margin: 0 }}>
-              <button className="primary" disabled={form.change_reason.trim().length < 10 || form.name.trim().length < 2} onClick={create}>保存为草稿</button>
+              <button className="primary" disabled={busy || form.change_reason.trim().length < 10 || form.name.trim().length < 2} onClick={create}>保存为草稿</button>
               <button className="ghost" onClick={() => setForm(null)}>取消</button>
             </div>
           </section>

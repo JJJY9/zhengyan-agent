@@ -23,7 +23,11 @@ export default function RoutingCard({ r, roleHint }: { r: RouteDecision; roleHin
               <div className="bar"><div className={`rt-bg-${k}`} style={{ width: `${(probs[k] ?? 0) * 100}%` }} /></div>
               <span className="num">{((probs[k] ?? 0) * 100).toFixed(0)}%</span>
             </div>
-          )) : <div className="muted small">你已指定研究方式，系统没有另作判断</div>}
+          )) : <div className="muted small">{
+            r.source === "user" ? "你已指定研究方式，系统没有另作判断"
+              : r.source === "rule" ? "按规则直接选择研究方式，未经模型判断"
+              : r.source === "fallback" ? "判别器不可用，按默认方式继续"
+              : "本次没有判别器概率记录（走了规则或回退）"}</div>}
         </div>
         <div>
           <div className="muted small">问题的分量</div>
