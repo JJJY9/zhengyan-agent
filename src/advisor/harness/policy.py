@@ -1,4 +1,6 @@
 """策略只从配置加载；运行中的模型无权修改。"""
+import math
+import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
@@ -48,7 +50,35 @@ class Policy:
 
     @classmethod
     def load(cls, config_dir: Path | None = None) -> "Policy":
-        return cls(load_yaml("policies.yaml", config_dir), load_yaml("sites.yaml", config_dir))
+        policy = cls(load_yaml("policies.yaml", config_dir), load_yaml("sites.yaml", config_dir))
+        policy.validate()
+        return policy
+
+    def validate(self) -> None:
+        """配置缺段/拼错必须启动即失败：egress 脱敏静默失效比拒绝启动危险得多。"""
+        missing = [name for name in ("quick", "standard", "deep", "mcp") if name not in self.routes]
+        if missing:
+            raise ValueError(f"policies.yaml 缺少必需流程：{missing}")
+        for name, rp in self.routes.items():
+            for key in ("tokens", "search_calls", "fetch_calls", "wall_clock_s"):
+                if key not in rp.budget:
+                    raise ValueError(f"流程 {name} 缺少预算键 {key}")
+                v = rp.budget[key]
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                    raise ValueError(f"流程 {name} 的预算 {key}={v!r} 无效（需为非负有限数）")
+            if rp.budget["wall_clock_s"] <= 0:
+                raise ValueError(f"流程 {name} 的 wall_clock_s 必须为正")
+        pats = self.egress.get("sensitive_patterns")
+        if not isinstance(pats, list) or not pats:
+            raise ValueError("egress.sensitive_patterns 缺失或为空：出域脱敏会静默失效，拒绝启动")
+        trade = self.egress.get("trade_intent_patterns")
+        if not isinstance(trade, list):
+            raise ValueError("egress.trade_intent_patterns 必须是列表")
+        for pattern in [*pats, *trade]:
+            try:
+                re.compile(pattern)
+            except (TypeError, re.error) as e:
+                raise ValueError(f"egress 正则无效：{pattern!r}（{e}）") from e
 
     def route(self, name: str) -> RoutePolicy:
         if name not in self.routes:
