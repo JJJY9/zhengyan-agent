@@ -85,6 +85,7 @@ export interface UpdateCase {
 }
 export interface EvalRun {
   run_id: string; type: "compare" | "routing" | "update"; status: string; created_at: string; error?: string;
+  started_at?: string | null;   // 显式 null = 已提交但排队未开跑（R63 起）
   routes?: string[]; cases?: { id: string; question: string }[]; case_count?: number;
   results?: { case: string; route: string; task_id?: string; dossier_key?: string; version?: number; metrics?: EvalMetrics; error?: string }[];
   update_results?: UpdateCase[]; metric_labels?: Record<string, string>; update_summary?: Record<string, number | null>; labeled?: number;

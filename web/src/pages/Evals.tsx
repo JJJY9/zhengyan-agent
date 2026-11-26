@@ -5,6 +5,9 @@ import { StatusBadge } from "../components/Badge";
 import { fmtTime, ROUTE_LABEL } from "../format";
 import type { EvalRun } from "../types";
 
+/** running 且 started_at 显式为 null：已提交、排队等待空闲 worker（未开跑不做停滞回收）。 */
+const isQueued = (r: EvalRun) => r.status === "running" && r.started_at === null;
+
 const METRIC_ROWS: [string, string, (v: number) => string][] = [
   ["score", "综合质量分", (v) => v.toFixed(3)],
   ["verified_rate", "主张核验通过率", (v) => `${(v * 100).toFixed(0)}%`],
@@ -107,9 +110,9 @@ export default function Evals() {
               <StatusBadge status={r.status} />
               <span className="grow">
                 {r.status === "failed" ? `失败：${r.error ?? "评测未完成"}` :
-                  r.type === "compare" ? (r.status === "running" ? "评测进行中…" : (r.summary?.verdict.text ?? "—")) :
+                  r.type === "compare" ? (r.status === "running" ? (isQueued(r) ? "排队中：等待空闲的后台线程" : "评测进行中…") : (r.summary?.verdict.text ?? "—")) :
                   r.type === "update" ? updateLine(r) :
-                    r.status === "running" ? "评测进行中…" :
+                    r.status === "running" ? (isQueued(r) ? "排队中：等待空闲的后台线程" : "评测进行中…") :
                       `准确率 ${r.accuracy == null ? "—" : `${Math.round(r.accuracy * 100)}%`} · 深研召回 ${pct(r.deep_recall)} · 建议温度 ${r.calibration?.best_temperature ?? "—"}`}
               </span>
               <span className="muted small">{fmtTime(r.created_at)}</span>
@@ -154,7 +157,12 @@ function CompareView({ run }: { run: EvalRun }) {
           </div>
         </div>
       )}
-      {run.status === "running" && <p className="muted"><span className="spinner inline" /> 评测进行中：已完成 {run.results?.length ?? 0} / {(run.cases?.length ?? 0) * routes.length}</p>}
+      {run.status === "running" && (
+        <p className="muted"><span className="spinner inline" />
+          {isQueued(run) ? "排队中：等待空闲的后台线程，开始后每完成一例刷新进度"
+                         : `评测进行中：已完成 ${run.results?.length ?? 0} / ${(run.cases?.length ?? 0) * routes.length}`}
+        </p>
+      )}
       {hasSummary && (   // summary 可能只有 verdict（失败/中断行）
         <div className="card">
           <h3>汇总（均值）</h3>
@@ -248,7 +256,10 @@ function RoutingView({ run }: { run: EvalRun }) {
   if (run.status === "running") {
     return (
       <div className="card">
-        <p className="muted"><span className="spinner inline" /> 评测进行中：指标与混淆矩阵在全部用例跑完后一次性给出</p>
+        <p className="muted"><span className="spinner inline" />
+          {isQueued(run) ? "排队中：等待空闲的后台线程"
+                         : "评测进行中：指标与混淆矩阵在全部用例跑完后一次性给出"}
+        </p>
       </div>
     );
   }
