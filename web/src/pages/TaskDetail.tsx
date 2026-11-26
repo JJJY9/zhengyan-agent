@@ -90,6 +90,7 @@ export default function TaskDetail() {
           <button className="danger" onClick={cancel}>取消 / 撤销授权</button>
         )}
       </div>
+      {actionErr && <div className="error">{actionErr}</div>}
       <div className="card">
         <div className="kv"><span>问题</span><b>{task.request.question}</b></div>
         <div className="kv"><span>数据截至</span>{task.request.as_of ? `${task.request.as_of}（只用这天及之前公开的信息）` : "今天（使用最新可得的信息）"}</div>
@@ -109,7 +110,6 @@ export default function TaskDetail() {
             <p className="muted small">审批绑定 {task.interrupt.skill} v{task.interrupt.version} 与本次参数，{task.interrupt.ttl_s}s 内有效；参数或版本变化即失效。</p>
           )}
           {expired && <div className="warn-text">审批已过期（超过 {it.ttl_s}s）：此时点同意会被按拒绝处理，请点「拒绝并停止」后重新发起任务。</div>}
-          {actionErr && <div className="error">{actionErr}</div>}
           <div className="row-btns">
             <button className="primary" disabled={expired} onClick={() => decide(true)}>
               {it.type === "review" ? "确认以部分结论提交" : "同意，继续"}
