@@ -65,7 +65,8 @@ class Services:
         return len(self.watch.store.list_alerts(ticker, "open"))
 
     def submit(self, fn, *args):
-        return self.research.submit(fn, *args)
+        # 页面上的后台作业（RSI、评测、扫描、模拟盘推进）走侧栏线程池：不占交互研究的名额
+        return self.research.submit_side(fn, *args)
 
 
 def build_services(deps: Deps | None = None, checkpointer=None, recover_stale: bool = False) -> Services:
