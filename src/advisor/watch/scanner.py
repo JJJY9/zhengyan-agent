@@ -97,7 +97,8 @@ class Watcher:
             fingerprint=_fingerprint(d, events), events=events, affected=list(affected.values()),
             created_at=datetime.now(timezone.utc), note="；".join(notes),
         ))
-        self.store.mark_scanned(ticker, alert_summary(alert, created))
+        note = alert_summary(alert, created) + (f"（{'；'.join(notes)}）" if notes else "")
+        self.store.mark_scanned(ticker, note)
         return alert
 
     def _supersede_open_alerts(self, d: Dossier) -> None:

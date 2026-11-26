@@ -96,11 +96,11 @@ def test_cross_process_claims_nav_atomically(repo, policy):
 def test_login_throttle_buckets_per_account():
     t = _LoginThrottle(limit=3, window_s=60)
     for _ in range(3):
-        t.fail(("1.2.3.4", "admin"))
-    assert t.blocked(("1.2.3.4", "admin"))
-    assert not t.blocked(("1.2.3.4", "guest"))             # 不同账号不共享计数
-    t.success(("1.2.3.4", "admin"))
-    assert not t.blocked(("1.2.3.4", "admin"))
+        t.fail("1.2.3.4", "admin")
+    assert t.blocked("1.2.3.4", "admin")
+    assert not t.blocked("1.2.3.4", "guest")               # 不同账号不共享计数
+    t.success("1.2.3.4", "admin")
+    assert not t.blocked("1.2.3.4", "admin")
 
 
 def test_spoofed_usernames_do_not_lock_correct_account(repo, policy):

@@ -98,7 +98,8 @@ class PaperBook:
                     return navs[-1]                                          # 同一天重复推进：幂等
                 raise PaperError(f"{day} 不晚于上一个净值点 {navs[-1].date}：模拟盘只能向前")
             point, trades = self._compute(card, day, navs)
-            point = point.model_copy(update={"seq": len(navs) + 1})         # 序号即并发认领：后写者撞唯一索引
+            # 序号即并发认领：取 max(seq)+1 而不是 len+1——删除补偿会留下序号空洞，len+1 会永远撞已存在的 seq
+            point = point.model_copy(update={"seq": max((n.seq for n in navs), default=0) + 1})
             try:
                 self.store.add_nav(point)
             except DuplicateKeyError:
@@ -111,6 +112,10 @@ class PaperBook:
             try:
                 self.store.add_trades(trades)
             except Exception:
+                latest = self.store.navs_of(card.card_id, card.version)
+                if latest and latest[-1].date != day:
+                    # 已有更晚净值点基于今天成交推进：此时删除会让它们悬空，保留并显式要求人工核对
+                    raise PaperError(f"{day} 成交写入失败且已有更晚净值点 {latest[-1].date}：该日成交缺失，需人工核对") from None
                 self.store.delete_nav(card.card_id, card.version, day)   # 成交没写上：撤销净值点，重试补齐
                 raise
             return point

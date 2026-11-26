@@ -117,6 +117,7 @@ class RSIRunner:
                          f"发布{KIND_LABEL[run.kind]}：校验在用版本后激活新版本")
         asset = None
         activated = False
+        conflicted = False
         try:
             active = self.ledger.active_version(run.kind)
             if active != run.base_version:
@@ -130,25 +131,35 @@ class RSIRunner:
             if not self.ledger.activate(run.kind, run.base_version, asset.version):
                 raise TransitionError(f"{KIND_LABEL[run.kind]}在用版本已被并发修改，候选需重新评测")
             activated = True
-            for prev in self.ledger.runs_of(run.kind, "released"):
-                if prev.run_id != run.run_id:
-                    self._move(prev, "archived", "archive", "system", f"被 {run.run_id} 发布的 v{asset.version} 取代")
-            self.ledger.set_issue_status(resolved, "addressed")   # 只标记回放确认已判对的坏案例；其余留在 open
-            self.loader.invalidate()
+            # 激活成功后立即把运行状态写死：save_run 走乐观锁，失败说明运行状态被并发改动（回滚/拒绝/归档），
+            # 此时不能写发布成功事件，也不能动坏案例——撤销激活并如实报冲突
             run.released_version = asset.version
-            self.ledger.save_run(run, expect_status="released")
+            if not self.ledger.save_run(run, expect_status="released"):
+                self.ledger.activate(run.kind, asset.version, run.base_version)     # 尽力回退指针
+                self.ledger.delete_asset(run.kind, asset.version)
+                activated, conflicted = False, True
+                raise TransitionError("发布与并发操作冲突（运行状态已变化），已回退在用版本，请刷新重试")
             self.ledger.event("release", actor, run_id=run.run_id, kind=run.kind, scenario=run.scenario,
                               from_status="released", to_status="released",
                               detail=(f"发布{KIND_LABEL[run.kind]} v{asset.version}（parent v{run.base_version}，"
                                       f"sha256 {asset.sha256[:10]}）；坏案例回放确认 {len(resolved)}/{len(run.issue_ids)} 条已修复"),
                               active_version=asset.version)
+            try:
+                for prev in self.ledger.runs_of(run.kind, "released"):
+                    if prev.run_id != run.run_id:
+                        self._move(prev, "archived", "archive", "system", f"被 {run.run_id} 发布的 v{asset.version} 取代")
+                self.ledger.set_issue_status(resolved, "addressed")   # 只标记回放确认已判对的坏案例；其余留在 open
+            except Exception as e:      # noqa: BLE001  发布已成事实：簿记失败要可见，但不能回滚已生效的发布
+                self.ledger.event("release.degraded", actor, run_id=run.run_id, kind=run.kind,
+                                  detail=f"发布后簿记失败（旧运行归档/坏案例标记）：{type(e).__name__}: {e}")
+            self.loader.invalidate()
             return run
         except Exception:
             # 失败补偿：从未激活的资产删除、占位退回 approved，保证失败方不留副作用
             try:
                 if asset is not None and not activated:
                     self.ledger.delete_asset(run.kind, asset.version)
-                if not activated:
+                if not activated and not conflicted:
                     run.status = "approved"
                     run.released_version = None
                     self.ledger.save_run(run, expect_status="released")
@@ -182,8 +193,9 @@ class RSIRunner:
         from advisor.routing import route_from_probs
         cfg = {**self.deps.policy.routing, **run.content}
         resolved = []
-        eval_runs = list(self.deps.repo.db.eval_runs.find({"type": "routing"}, projection={"_id": 0})
-                         .sort("created_at", -1).limit(5))
+        eval_runs = list(self.deps.repo.db.eval_runs.find(
+            {"type": "routing", "status": "done", "rows.0": {"$exists": True}}, projection={"_id": 0})
+            .sort("created_at", -1).limit(5))
         for issue in self.ledger.get_issues(run.issue_ids):
             q = (issue.source or {}).get("question")
             rows = [r for rr in eval_runs for r in rr.get("rows", []) if r.get("question") == q]

@@ -120,13 +120,20 @@ class _SessionStore:
 
 
 class _LoginThrottle:
-    """按客户端 IP 记录登录失败；窗口内失败达上限后暂时拒绝（成功即清零）。"""
+    """登录失败限速：按 (IP, 账号) 分桶，另留按 IP 的总闸；过期桶定期清理。
+
+    只按账号分桶会丢 IP 级限速：同一个 IP 换着用户名喷洒，每个账号都拿到满额尝试次数；
+    只按 IP 分桶又会因反代把全员算成同一来源而一锁全锁——两级并用。
+    """
+
+    IP_LIMIT_FACTOR = 5      # 单 IP 在窗口内的失败上限 = 账号上限 × 该系数
+    PRUNE_AT = 10000         # 失败桶数量超过此时全量清理过期键，避免无界增长
 
     def __init__(self, limit: int = LOGIN_MAX_FAILURES, window_s: float = LOGIN_WINDOW_S, now=time.monotonic):
         self.limit, self.window_s, self._now = limit, window_s, now
-        self._fails: dict[str, list[float]] = {}
+        self._fails: dict[tuple, list[float]] = {}
 
-    def _recent(self, key: tuple[str, str]) -> list[float]:
+    def _recent(self, key: tuple) -> list[float]:
         cutoff = self._now() - self.window_s
         fails = [t for t in self._fails.get(key, []) if t > cutoff]
         if fails:
@@ -135,15 +142,35 @@ class _LoginThrottle:
             self._fails.pop(key, None)
         return fails
 
-    def blocked(self, key: tuple[str, str]) -> bool:
-        return len(self._recent(key)) >= self.limit
+    def blocked(self, ip: str, user: str) -> bool:
+        if len(self._recent(("i", ip))) >= self.limit * self.IP_LIMIT_FACTOR:
+            return True
+        return len(self._recent(("a", ip, user))) >= self.limit
 
-    def fail(self, key: tuple[str, str]) -> None:
-        self._recent(key)
-        self._fails.setdefault(key, []).append(self._now())
+    def fail(self, ip: str, user: str) -> None:
+        self._recent(("a", ip, user))
+        self._fails.setdefault(("a", ip, user), []).append(self._now())
+        self._fails.setdefault(("i", ip), []).append(self._now())
+        if len(self._fails) > self.PRUNE_AT:
+            self._prune_all()
 
-    def success(self, key: tuple[str, str]) -> None:
-        self._fails.pop(key, None)
+    def success(self, ip: str, user: str) -> None:
+        self._fails.pop(("a", ip, user), None)
+
+    def _prune_all(self) -> None:
+        cutoff = self._now() - self.window_s
+        for key in list(self._fails):
+            fails = [t for t in self._fails[key] if t > cutoff]
+            if fails:
+                self._fails[key] = fails
+            else:
+                self._fails.pop(key, None)
+        if len(self._fails) > self.PRUNE_AT:
+            # 窗口内仍超上限（喷洒制造海量新账号桶）：按最近一次失败时间淘汰最旧的账号桶；
+            # IP 总闸桶保留——喷的人越多，这个 IP 越该被挡
+            acct = sorted((max(v), k) for k, v in self._fails.items() if k[0] == "a")
+            for _, key in acct[: len(self._fails) - self.PRUNE_AT]:
+                self._fails.pop(key, None)
 
 
 class _BodyTooLarge(Exception):
@@ -226,15 +253,15 @@ def _require_login(app: FastAPI, user: str, password: str, cookie_secure: bool =
     @app.post("/api/login")
     def login(body: LoginBody, request: Request):
         ip = request.client.host if request.client else "unknown"
-        key = (ip, body.user.strip())          # 按 (来源 IP, 账号) 分桶：陌生账号的爆破不能锁死正确账号
-        if throttle.blocked(key):
+        name = body.user.strip()
+        if throttle.blocked(ip, name):         # (IP,账号) 分桶 + IP 总闸：喷洒挡得住，单账号爆破锁不住别人
             raise HTTPException(429, "登录尝试过多，请稍后再试", headers={"Retry-After": str(LOGIN_WINDOW_S)})
         user_ok = secrets.compare_digest(body.user.encode(), user.encode())
         password_ok = secrets.compare_digest(body.password.encode(), password.encode())
         if not (user_ok and password_ok):
-            throttle.fail(key)
+            throttle.fail(ip, name)
             raise HTTPException(401, "账号或密码不对")
-        throttle.success(key)
+        throttle.success(ip, name)
         resp = JSONResponse({"ok": True})
         https = cookie_secure or request.url.scheme == "https" \
             or request.headers.get("x-forwarded-proto", "").strip().lower() == "https"
