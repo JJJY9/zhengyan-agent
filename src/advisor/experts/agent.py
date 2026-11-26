@@ -152,7 +152,15 @@ def run_expert(deps, p: dict) -> dict:
         hint = deps.rsi.expert_hint(spec.key, spec.query_hint) if deps.rsi else spec.query_hint
     try:
         if spec.searches and int(budget.limits.get("search_calls", 0)) > 0:
-            queries = expert_queries(h, spec, hint, p["company"], p["ticker"], p["questions"])[: int(budget.limits["search_calls"])]
+            cap = int(budget.limits["search_calls"])
+            stored = deps.repo.get_working(p["task_id"], "expert_queries", spec.key)
+            if stored and stored.get("questions") == p["questions"]:
+                # 审批恢复会重放整个专家节点：复用已生成的搜索词，重采样会让已批准的调用对不上参数（args_hash）
+                queries = stored["queries"][:cap]
+            else:
+                queries = expert_queries(h, spec, hint, p["company"], p["ticker"], p["questions"])[:cap]
+                deps.repo.save_working(p["task_id"], "expert_queries", spec.key,
+                                       {"questions": p["questions"], "queries": queries})
             log_notes: list[str] = []
             gathered = gather_web(h, deps, queries, as_of, p["route"],
                                   max_fetch=int(budget.limits.get("fetch_calls", 0)), log=log_notes.append,
