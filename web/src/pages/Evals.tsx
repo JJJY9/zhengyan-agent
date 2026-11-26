@@ -154,13 +154,35 @@ export default function Evals() {
 }
 
 function CompareView({ run }: { run: EvalRun }) {
+  const nav = useNavigate();
+  const [retrying, setRetrying] = useState(false);
+  const [retryErr, setRetryErr] = useState("");
   const s = run.summary;
   const routes = run.routes ?? [];
   const v = s?.verdict;
   const hasSummary = !!s?.routes && Object.keys(s.routes).length > 0;
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true); setRetryErr("");
+    try {
+      const { run_id } = await api.startCompare({ case_ids: run.cases?.map((c) => c.id), routes });
+      nav(`/evals/${run_id}`);
+    } catch (e) { setRetryErr((e as Error).message); }
+    finally { setRetrying(false); }
+  };
   return (
     <div>
-      {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
+      {run.status === "failed" && (
+        <>
+          <div className="error">{run.error ?? "评测失败"}</div>
+          <div className="row-btns" style={{ margin: "8px 0" }}>
+            <button className="primary" disabled={retrying} onClick={retry}>
+              {retrying ? "正在提交…" : "按相同用例与方式重新发起对照评测"}
+            </button>
+            {retryErr && <span className="error" style={{ margin: 0 }}>{retryErr}</span>}
+          </div>
+        </>
+      )}
       {v && v.decision === "insufficient" && run.status !== "running"
         && (!v.provisional || run.status === "failed") && (   // 运行中不判「不完整」；失败行显示中断结论
         <div className="card warnbox">
@@ -280,8 +302,20 @@ function UpdateView({ run }: { run: EvalRun }) {
 }
 
 function RoutingView({ run }: { run: EvalRun }) {
+  const nav = useNavigate();
+  const [retrying, setRetrying] = useState(false);
+  const [retryErr, setRetryErr] = useState("");
   const labels = ["quick", "standard", "deep"];
   const cal = run.calibration;
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true); setRetryErr("");
+    try {
+      const { run_id } = await api.startRoutingEval();
+      nav(`/evals/${run_id}`);
+    } catch (e) { setRetryErr((e as Error).message); }
+    finally { setRetrying(false); }
+  };
   if (run.status === "running") {
     return (
       <div className="card">
@@ -294,7 +328,17 @@ function RoutingView({ run }: { run: EvalRun }) {
   }
   return (
     <div>
-      {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
+      {run.status === "failed" && (
+        <>
+          <div className="error">{run.error ?? "评测失败"}</div>
+          <div className="row-btns" style={{ margin: "8px 0" }}>
+            <button className="primary" disabled={retrying} onClick={retry}>
+              {retrying ? "正在提交…" : "重新发起路由校准"}
+            </button>
+            {retryErr && <span className="error" style={{ margin: 0 }}>{retryErr}</span>}
+          </div>
+        </>
+      )}
       <div className="stat-row">
         <div className="card stat"><div className="muted small">准确率</div><b>{pct(run.accuracy) || "—"}</b></div>
         <div className="card stat"><div className="muted small">深研召回</div><b>{pct(run.deep_recall)}</b></div>
