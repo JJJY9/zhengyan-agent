@@ -155,6 +155,7 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
   const [task, setTask] = useState<Task | null>(null);
   const [summary, setSummary] = useState<string>("");
   const [decideErr, setDecideErr] = useState("");
+  const [taskErr, setTaskErr] = useState("");
   const [tick, setTick] = useState(0);
   const doneRef = useRef(false);
   useEffect(() => {
@@ -171,7 +172,13 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
           onDone();
           api.dossier(t.result.dossier_key, t.result.version).then((d) => alive && setSummary(d.dossier.summary)).catch(() => undefined);
         }
-      } catch { timer = window.setTimeout(load, 4000); }
+      } catch (e) {
+        if ((e as Error & { status?: number }).status === 404) {
+          setTaskErr("任务不存在或已清理（可能已被归档），请重新发起");
+          return;                          // 404 不重试：永久轮询没有意义
+        }
+        timer = window.setTimeout(load, 4000);
+      }
     };
     load();
     return () => { alive = false; window.clearTimeout(timer); };
@@ -194,7 +201,7 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
           {task && ACTIVE.has(task.status) && <span className="spinner inline" />}
           {task?.result?.route && <span className={`route-pill rt-${task.result.route}`}>{ROUTE_LABEL[task.result.route]}</span>}
         </div>
-        {!task ? <span className="muted">提交中…</span> : (
+        {!task ? <span className={taskErr ? "error" : "muted"}>{taskErr || "提交中…"}</span> : (
           <ul className="steps">
             {events.length > shown.length && <li className="more">… 已完成 {events.length - shown.length} 步</li>}
             {shown.map((e, i) => <li key={i}><b>{nodeLabel(e.node)}</b>{e.message}</li>)}
@@ -338,7 +345,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
 
   const submit = useCallback(async (question: string, route: string, as_of: string, ticker?: string) => {
-    const { task_id } = await api.research({ question, route, as_of, ticker });
+    // 页面附带的 ticker 只在问题没有点名其它股票时使用：问顾问里写别的代码时不能研究错标的
+    const codes = question.match(/(?<!\d)\d{6}(?!\d)/g) ?? [];
+    const t = ticker && !codes.some((c) => c !== ticker) ? ticker : undefined;
+    const { task_id } = await api.research({ question, route, as_of, ticker: t });
     setTurns((ts) => [...ts, { task_id, question, route, as_of, ts: Date.now() }]);
     setAskOpen(true);
     refresh();

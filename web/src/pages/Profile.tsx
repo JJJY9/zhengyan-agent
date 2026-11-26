@@ -17,6 +17,7 @@ export default function Profile() {
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [saving, setSaving] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   useAskContext({ title: "我的约束", suggestions: ["合同负债大幅下降一定说明需求走弱吗？"] }, []);
 
@@ -32,13 +33,15 @@ export default function Profile() {
 
   const setH = (i: number, patch: Partial<Holding>) => setHoldings((hs) => hs.map((h, k) => (k === i ? { ...h, ...patch } : h)));
   const save = async () => {
+    if (saving) return;                            // 双击写入两个相同版本
+    setSaving(true);
     setMsg(null);
     try {
       const v = await api.profile.confirm({ risk, holdings, change_note: note, confirmed });
       const n = v.impact?.length ?? 0;
       setMsg({ ok: true, text: `已保存为 v${v.version}。` + (n ? `有 ${n} 份档案的个人情境结论因此改变，见下方版本记录。` : "没有档案的个人情境结论因此改变。") });
       setNote(""); setConfirmed(false); load();
-    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); } finally { setSaving(false); }
   };
 
   return (
@@ -78,7 +81,9 @@ export default function Profile() {
           <label className="check"><input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
             我确认以上信息由我本人填写。系统不会替我填写或修改这些约束。</label>
           {msg && <div className={msg.ok ? "muted" : "error"}>{msg.text}</div>}
-          <button className="primary" style={{ alignSelf: "flex-start" }} disabled={!confirmed || !state || !!loadErr} onClick={save}>确认并保存新版本</button>
+          <button className="primary" style={{ alignSelf: "flex-start" }} disabled={!confirmed || !state || !!loadErr || saving} onClick={save}>
+            {saving ? "保存中…" : "确认并保存新版本"}
+          </button>
         </section>
 
         <h2>版本记录</h2>

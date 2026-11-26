@@ -3,7 +3,8 @@ import { fmtTime, nodeLabel, ROLE_LABEL } from "../format";
 import type { AuditRecord } from "../types";
 
 const CALL_STATUS: Record<string, string> = { ok: "成功", cache_hit: "用了缓存", error: "失败", denied: "被拒绝", timeout: "超时" };
-const callKind = (a: AuditRecord) => a.kind === "llm" ? `模型（${ROLE_LABEL[a.role ?? ""] ?? a.role}）` : "数据工具";
+const callKind = (a: AuditRecord) => a.kind === "llm" ? `模型（${ROLE_LABEL[a.role ?? ""] ?? a.role}）`
+  : a.kind === "decision" ? "决策小模型" : "数据工具";
 
 /** 按节点聚合的执行血缘（Trace 只证明谁在何时用了什么，不证明结论成立）。 */
 export default function TraceView({ audit }: { audit: AuditRecord[] }) {
