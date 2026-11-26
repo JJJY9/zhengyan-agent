@@ -47,6 +47,7 @@ def eval_routing(svc: Svc):
     run_id = "rt_" + uuid.uuid4().hex[:8]
     svc.deps.repo.save_eval({"run_id": run_id, "type": "routing", "status": "running",
                              "instance": svc.deps.instance,          # 排队中也有归属：停机/重启回收可命中
+                             "started_at": None,                     # 排队未开跑：停滞兜底只看租约
                              "created_at": datetime.now(timezone.utc)})
     try:
         svc.submit(partial(run_routing_eval, svc.deps, run_id=run_id))
@@ -78,6 +79,7 @@ def eval_compare(body: CompareIn, svc: Svc):
     # 先登记评测文档再丢给后台线程：前端立即 GET /api/evals/{run_id} 不会 404
     svc.deps.repo.save_eval({"run_id": run_id, "type": "compare", "status": "running", "routes": routes,
                              "cases": cases, "results": [], "instance": svc.deps.instance,
+                             "started_at": None,                     # 排队未开跑：停滞兜底只看租约
                              "created_at": datetime.now(timezone.utc)})
     try:
         svc.submit(run_compare, svc.research, cases, routes, run_id)
