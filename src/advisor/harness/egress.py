@@ -63,17 +63,19 @@ class EgressGuard:
                 j += 1
                 continue
             t = ch.translate(_FULLWIDTH)
-            if prev_digit and (t in sep_chars or t.isspace()):
+            if prev_digit and (t in sep_chars or t.isspace() or t in "~·•"):
                 k = j + 1
                 while k < n and (text[k] in sep_chars or text[k].isspace()
                                  or ord(text[k]) in _FORMAT_CHARS):
                     k += 1
                 if k < n and text[k].translate(_FULLWIDTH).isdigit():
-                    bridge_dates = ("\n" in text[j:k]
-                                    and _DATE_TAIL.search(text[:j]) and _DATE_HEAD.match(text[k:]))
+                    bridge_dates = bool(_DATE_TAIL.search(text[:j]) and _DATE_HEAD.match(text[k:]))
                     if not bridge_dates:
                         j = k                       # 数字间分隔（含换行）整体合并
                         continue
+                if k < n and text[k] in "股手元万亿份":
+                    j = k                           # 「1000-股」数字与单位间的符号不拆开识别
+                    continue
             norm_chars.append(t)
             norm_orig.append(j)
             prev_digit = t.isdigit()
@@ -117,9 +119,34 @@ class EgressGuard:
         """
         text = text or ""
         norm, norm_orig, line_of = self._scan(text)
+        spans = self._spans(norm)
+        if not spans:
+            return text
+        drop, hit_lines = self._collect(spans, norm, norm_orig, line_of, keep_names)
+        if not drop and not hit_lines:
+            return text
+        return self._render(text, drop, hit_lines, line_of)
+
+    def redact_question(self, text: str) -> str:
+        """问题全文脱敏（consent 口径）：只要命中个人信息，整段问题里的所有数字都遮蔽。
+
+        同一段个人陈述的成本/股数可能被换行、零宽字符隔在不同行，且不被任何单条模式覆盖——
+        逐行粒度无法兑现「这些信息会被脱敏」的承诺；问题文本（不混证据区）一律按全文遮蔽。
+        """
+        text = text or ""
+        norm, norm_orig, line_of = self._scan(text)
+        spans = self._spans(norm)
+        if not spans:
+            return text
+        drop, _ = self._collect(spans, norm, norm_orig, line_of, True)
+        all_lines = set(range(len(text.split("\n"))))
+        return self._render(text, drop, all_lines, line_of)
+
+    def _collect(self, spans: list[list[int]], norm: str, norm_orig: list[int], line_of: list[int],
+                 keep_names: bool) -> tuple[dict[int, int], set[int]]:
         drop: dict[int, int] = {}                 # 原字符索引 → 替换段起点（起点插占位符）
         hit_lines: set[int] = set()
-        for start, end in self._spans(norm):
+        for start, end in spans:
             chunk = norm[start:end]
             secret_like = (_SECRET_HINT.search(chunk)
                            or (re.search(r"[A-Za-z]", chunk) and not _CJK.search(chunk)))
@@ -132,8 +159,10 @@ class EgressGuard:
             for k in range(start, min(end, len(norm))):
                 if norm[k].isdigit():
                     hit_lines.add(line_of[norm_orig[k]])
-        if not drop and not hit_lines:
-            return text
+        return drop, hit_lines
+
+    @staticmethod
+    def _render(text: str, drop: dict[int, int], hit_lines: set[int], line_of: list[int]) -> str:
         out_lines = []
         for li, line in enumerate(text.split("\n")):
             if li in hit_lines or any(0 <= o < len(text) and line_of[o] == li for o in drop):
