@@ -139,7 +139,7 @@ function CompareView({ run }: { run: EvalRun }) {
           </div>
         </div>
       )}
-      {v && v.decision !== "insufficient" && (
+      {v && v.decision !== "insufficient" && run.status !== "running" && (   // 运行中不给最终结论
         <div className={`card ${v.decision === "adopt_multi_expert" ? "success" : "warnbox"}`}>
           <div>
             <h3>{v.text}</h3>

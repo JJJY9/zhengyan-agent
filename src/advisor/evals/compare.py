@@ -99,8 +99,14 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                 except Exception as e:  # noqa: BLE001  单例失败记录在案，不中断评测
                     entry["error"] = f"{type(e).__name__}: {e}"
                 run["results"].append(entry)
-                run["summary"] = summarize(run["results"])
+                progress = summarize(run["results"])
+                # 运行中不给出定稿式 verdict（adopt/keep 会让详情页当成最终结论）；只保留均值与进度
+                progress["verdict"] = {"decision": "insufficient", "provisional": True,
+                                       "text": "评测进行中：结论在全部用例完成后给出"}
+                run["summary"] = progress
+                run["status"] = "running"
                 repo.save_eval(run)
+        run["summary"] = summarize(run["results"])
         run["status"] = "done"
     except Exception as e:  # noqa: BLE001  任何意外都落成 failed：评测页不会永远停在「进行中」
         run["status"] = "failed"

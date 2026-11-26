@@ -35,6 +35,7 @@ class Services:
         if self.recover_stale:
             # 服务进程重启后把上一实例遗留的 queued/running 任务标记失败（重启前的任务线程已不存在）
             self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S)
+            self.deps.repo.recover_stale_evals()          # 评测同理：running 僵尸不再让页面永远轮询
         self.rsi = RSIRunner(self.deps, self.deps.ledger, self.deps.rsi)
         self.profiles = ProfileStore(db)
         self.watch = Watcher(self.deps, WatchStore(db))
