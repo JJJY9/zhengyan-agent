@@ -11,6 +11,6 @@ web/dist
 web/tsconfig.tsbuildinfo
 data
 reports
-deploy
+deploy/mongo-init/demo-data.archive.gz
 docs
 *.pdf

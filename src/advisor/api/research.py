@@ -102,5 +102,8 @@ def meta(svc: Svc):
         "experts": [{"key": e.key, "name": e.name, "mandate": e.mandate, "constraint": e.constraint,
                      "role": p.experts.get("roles", {}).get(e.key)} for e in EXPERTS.values()],
         "routes": {k: {"llm_role": r.llm_role, "budget": r.budget} for k, r in p.routes.items() if k != "mcp"},
-        "routing": p.routing, "expert_cfg": {k: v for k, v in p.experts.items() if k != "roles"},
+        "routing": p.routing,
+        # 白名单：只回传后端真正消费的键，避免死配置被系统页当成权威展示
+        "expert_cfg": {k: p.experts[k] for k in ("max_team", "max_challenges", "search_per_expert",
+                                                 "fetch_per_expert") if k in p.experts},
     }

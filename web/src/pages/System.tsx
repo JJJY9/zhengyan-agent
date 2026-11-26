@@ -85,7 +85,7 @@ export default function System() {
       <h2>专家团队</h2>
       <p className="muted small">
         争议深研时，系统按缺什么证据来请专家，最多 {ec.max_team} 位，外加一位反证官。每位专家最多搜索 {ec.search_per_expert} 次、
-        读 {ec.fetch_per_expert} 篇原文；之后互相质询，辩论 {ec.debate_rounds} 轮。
+        读 {ec.fetch_per_expert} 篇原文；之后互相质询与回应各一轮，再交主席裁决。
       </p>
       <table className="table card">
         <thead><tr><th>专家</th><th>负责什么</th><th>必须遵守</th></tr></thead>
