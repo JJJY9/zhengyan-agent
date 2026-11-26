@@ -46,7 +46,7 @@ def export_markdown(svc: Svc):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for row in svc.deps.repo.list_dossiers():
-            d = svc.deps.repo.get_dossier(row["key"])
+            d = svc.deps.repo.get_dossier(row["key"], row["version"])   # 与列表同一口径的「当前档案」
             if d is None or not d.report_md:
                 continue
             z.writestr(f"{d.ticker}_v{d.version}_{d.as_of}.md", d.report_md)
@@ -59,7 +59,7 @@ def watchlist(svc: Svc):
     """档案标的的最近行情/估值快照（A 级证据，截至研究时点，不是实时行情），附订阅与待复核状态。"""
     repo, out = svc.deps.repo, []
     for d in repo.list_dossiers():
-        full = repo.get_dossier(d["key"])
+        full = repo.get_dossier(d["key"], d["version"])
         facts = metric_facts(repo.get_evidence(full.evidence_ids if full else []))
         quote = {k: {"value": m.value, "unit": m.unit, "period": m.period}
                  for k, m in facts.items() if k in ("close", "chg_20d", "pe_ttm", "pe_pct")}

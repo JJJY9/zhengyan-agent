@@ -58,11 +58,17 @@ class Repository:
         doc = self.db.snapshots.find_one({"hash": digest})
         return doc["content"] if doc else None
 
-    def put_evidence(self, card: EvidenceCard) -> None:
+    def put_evidence(self, card: EvidenceCard) -> bool:
+        """插入证据；同 id 已存在时比对内容：完全一致返回 True，元数据不同返回 False 并保留旧版（证据不可变）。"""
+        new = card.model_dump(mode="json")
         try:
-            self.db.evidence.insert_one(card.model_dump(mode="json"))
+            self.db.evidence.insert_one(new)
+            return True
         except DuplicateKeyError:
-            pass  # 同 id 即同内容（id 由内容哈希决定）
+            existing = self.db.evidence.find_one({"id": card.id}, projection={"_id": 0})
+            if existing is None:
+                return True
+            return not [k for k in new if k != "_id" and existing.get(k) != new.get(k)]   # 失败的插入会把 _id 注回字典
 
     def get_evidence(self, ids: list[str]) -> list[EvidenceCard]:
         docs = self.db.evidence.find({"id": {"$in": ids}})
@@ -118,7 +124,7 @@ class Repository:
     def list_dossiers(self) -> list[dict]:
         pipeline = [
             {"$match": {"key": {"$not": {"$regex": ":"}}}},     # 评测等命名空间档案不进用户列表
-            {"$sort": {"version": -1}},
+            {"$sort": {"as_of": -1, "version": -1}},          # 「当前档案」= (as_of, version) 最大，回填的高版本旧档案不算最新
             {"$group": {
                 "_id": "$key",
                 "key": {"$first": "$key"}, "ticker": {"$first": "$ticker"}, "name": {"$first": "$name"},

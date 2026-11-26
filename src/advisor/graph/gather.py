@@ -101,7 +101,8 @@ def gather_web(h, deps, queries: list[str], as_of: date, route: str, max_fetch: 
             published_at=hit.date, as_of=as_of, pit="weak", excerpt=excerpt, authority=hit.authority,
             rerank_score=hit.rerank_score, caveats=caveats, skill="web.search", skill_version="1.0.0",
         )
-        deps.repo.put_evidence(card)
+        if not deps.repo.put_evidence(card):
+            res.unknowns.append(f"证据元数据与已有快照不一致（保留旧版）：{card.id}")
         res.cards.append(card)
     res.hits, res.clusters, res.fetched = len(hits), len(reps), len(fetched)
     return res

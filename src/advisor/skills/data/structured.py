@@ -176,12 +176,14 @@ def build_structured_skills(source: AShareSource, factory: EvidenceFactory) -> l
             metrics.append(Metric(name="近20日平均换手率", field="turnover_20d", value=q(sum(turnovers) / len(turnovers)),
                                   unit="%", period=last, basis="ratio"))
         card = factory.make(
-            content=json.dumps([r for _, _, r in rows[-260:]], ensure_ascii=False), level="A", source_type="market",
+            # 保存完整抓取窗口：watch 价格异动要用档案交易日在今日序列中的复权基准，
+            # 只留尾部会把老档案的基准行截掉，复权对齐失败后被静默当作「无变化」
+            content=json.dumps([r for _, _, r in rows], ensure_ascii=False), level="A", source_type="market",
             title=f"{inp.code} 日线行情（截至 {last}）", site_name="AKShare/东方财富行情",
             origin_id=f"market:{inp.code}:{last}", published_at=_dt(rows[-1][0]), as_of=inp.as_of,
             excerpt="；".join(f"{m.name} {m.value}{m.unit}" for m in metrics), metrics=metrics,
             caveats=["前复权价格；行情只描述状态，不单独推出买卖结论"],
-            skill="market.daily", skill_version="1.1.0",
+            skill="market.daily", skill_version="1.2.0",
         )
         return CardsOut(cards=[card])
 
