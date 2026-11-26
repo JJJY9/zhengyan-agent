@@ -50,8 +50,17 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
     running_doc = {"run_id": run_id, "type": "routing", "status": "running",
                    "created_at": datetime.now(timezone.utc),
                    "instance": getattr(deps, "instance", None)}
-    repo.save_eval(running_doc)
     try:
+        existing = repo.get_eval(run_id)
+        if existing is not None:
+            if existing.get("status") != "running":
+                return run_id              # 已被停机/回收判终态：不复活
+            running_doc = existing
+            running_doc.setdefault("instance", getattr(deps, "instance", None))
+            if not repo.save_eval(running_doc, only_if_running=True):
+                return run_id
+        else:
+            repo.save_eval(running_doc)        # CLI 新建
         cases = json.loads(path.read_text(encoding="utf-8"))["cases"]
         # 评测线上实际在用的参数：policies.yaml 叠加 RSI 账本里已发布的路由参数（S2）
         cfg = deps.rsi.routing(deps.policy.routing) if deps.rsi else dict(deps.policy.routing)

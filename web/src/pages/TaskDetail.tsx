@@ -126,7 +126,8 @@ export default function TaskDetail() {
           <Link className="primary-link" to={`/dossiers/${task.result.dossier_key}/${task.result.version}`}>查看底稿 →</Link>
         </div>
       )}
-      {task.error && <div className="error">{task.error}</div>}
+      {task.error && (task.status === "failed" || task.status === "cancelled")
+        && <div className="error">{task.error}</div>}
 
       {finalRouting && <RoutingCard r={finalRouting} />}
 

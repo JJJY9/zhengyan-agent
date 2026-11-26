@@ -179,11 +179,13 @@ class Repository:
                     repair_recovered: bool = False, **fields: Any) -> bool:
         """收尾：默认只允许从 status=running 写终态（被回收/取消的任务不复活）。
 
-        租约可能被误判（休眠/时钟跳变/Mongo 短断 >180s 让心跳断更）：此时任务已被回收成
+        租约可能被误判（启动回收按 90s、快 tick 按 180s 判过期；休眠/时钟跳变/Mongo 短断）：此时任务已被回收成
         failed，但执行者其实还活着且带着完整结果。instance+repair_recovered 给出修复通道：
         归属仍是本实例、失败原因恰为租约回收时，允许用真实结果修正终态，不丢弃成果。
         """
         payload = {**fields, "status": status, "updated_at": _now()}
+        if status != "failed":
+            payload.setdefault("error", None)      # waiting_approval/cancelled 不能残留「已被回收」红字
         if self.db.tasks.update_one({"task_id": task_id, "status": "running"}, {"$set": payload}).matched_count == 1:
             return True
         if instance and repair_recovered:
@@ -212,7 +214,7 @@ class Repository:
 
         恢复方通常与创建方不是同一进程：同一 CAS 里把 instance 重绑到当前进程，
         否则租约回收会把刚被批准的任务当成旧进程遗留标失败（审批静默丢失）。"""
-        fields = {"status": "running", "interrupt": None, "updated_at": _now()}
+        fields = {"status": "running", "interrupt": None, "error": None, "updated_at": _now()}
         if instance:
             fields["instance"] = instance
         doc = self.db.tasks.find_one_and_update(
@@ -354,13 +356,20 @@ class Repository:
                 "text": f"评测中断：已完成 {done_n} 例，结论不可用；可重新发起"}
 
     def _fail_eval_docs(self, docs: list[dict], reason: str) -> int:
-        """把 running 评测逐条标 failed，并把临时结论改写为「中断」：失败行不能再显示「进行中」。"""
+        """把 running 评测逐条标 failed，并把临时结论改写为「中断」：失败行不能再显示「进行中」。
+
+        summary 一律写完整形状（routes 至少为空映射）：点路径只写 verdict 会造出缺 routes 的残缺
+        summary，前端汇总表按 s.routes 取键会整页崩溃。
+        """
         n = 0
         for d in docs:
+            summary = dict(d.get("summary") or {})
+            summary.setdefault("routes", {})
+            summary["verdict"] = self._interrupted_verdict(len(d.get("results") or []))
             n += self.db.eval_runs.update_one(
                 {"run_id": d["run_id"], "status": "running"},
                 {"$set": {"status": "failed", "updated_at": _now(), "error": reason,
-                          "summary.verdict": self._interrupted_verdict(len(d.get("results") or []))}},
+                          "summary": summary}},
             ).modified_count
         return n
 
@@ -372,22 +381,23 @@ class Repository:
         alive: dict[str, bool] = {}
         for d in self.db.eval_runs.find({"status": "running"},
                                         projection={"run_id": 1, "instance": 1, "updated_at": 1,
-                                                    "results": 1}):
+                                                    "results": 1, "summary": 1}):
             inst = d.get("instance")
+            stalled = bool(d.get("updated_at") and d["updated_at"] < cutoff)
             if inst:
                 if inst not in alive:
                     alive[inst] = self.lease_alive(inst, lease_ttl_s)
-                if alive[inst]:
-                    continue
-            elif not (d.get("updated_at") and d["updated_at"] < cutoff):
-                continue
+                if alive[inst] and not stalled:
+                    continue                      # 进程还活着且仍有进展
+            elif not stalled:
+                continue                          # 历史无 instance：退回按停滞时长
             stale.append(d)
         return self._fail_eval_docs(stale, "评测所属进程已不在，已标记失败；可重新发起")
 
     def fail_instance_evals(self, instance: str, reason: str) -> int:
         """优雅停机：本实例登记且未完成的评测直接标 failed（排队作业已被取消）。"""
         docs = list(self.db.eval_runs.find({"status": "running", "instance": instance},
-                                           projection={"run_id": 1, "results": 1}))
+                                           projection={"run_id": 1, "results": 1, "summary": 1}))
         return self._fail_eval_docs(docs, reason)
 
     def get_eval(self, run_id: str) -> dict | None:

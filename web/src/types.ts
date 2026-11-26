@@ -88,7 +88,7 @@ export interface EvalRun {
   routes?: string[]; cases?: { id: string; question: string }[]; case_count?: number;
   results?: { case: string; route: string; task_id?: string; dossier_key?: string; version?: number; metrics?: EvalMetrics; error?: string }[];
   update_results?: UpdateCase[]; metric_labels?: Record<string, string>; update_summary?: Record<string, number | null>; labeled?: number;
-  summary?: { routes: Record<string, Record<string, number | null>>; verdict: { decision: string; text: string; provisional?: boolean; quality_delta?: number; cost_ratio?: number | null; non_inferior?: boolean; affordable?: boolean; failed_cases?: number; criteria?: Record<string, number> } };
+  summary?: { routes?: Record<string, Record<string, number | null>>; verdict: { decision: string; text: string; provisional?: boolean; quality_delta?: number; cost_ratio?: number | null; non_inferior?: boolean; affordable?: boolean; failed_cases?: number; criteria?: Record<string, number> } };
   rows?: { question: string; label: string; route: string; source: string; probs: Record<string, number>; abstain: boolean; correct: boolean }[];
   confusion?: Record<string, Record<string, number>>; accuracy?: number; deep_recall?: number; abstain_rate?: number;
   calibration?: { by_temperature: Record<string, { nll: number; ece: number; abstain_rate: number }>; best_temperature: number };

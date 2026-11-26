@@ -152,14 +152,14 @@ function CompareView({ run }: { run: EvalRun }) {
         </div>
       )}
       {run.status === "running" && <p className="muted"><span className="spinner inline" /> 评测进行中：已完成 {run.results?.length ?? 0} / {(run.cases?.length ?? 0) * routes.length}</p>}
-      {s && Object.keys(s.routes).length > 0 && (
+      {s?.routes && Object.keys(s.routes).length > 0 && (   // summary 可能只有 verdict（失败/中断行）
         <div className="card">
           <h3>汇总（均值）</h3>
           <table className="table">
             <thead><tr><th>指标</th>{routes.map((r) => <th key={r} className="num">{ROUTE_LABEL[r]}</th>)}</tr></thead>
             <tbody>
               {METRIC_ROWS.map(([k, label, f]) => (
-                <tr key={k}><td>{label}</td>{routes.map((r) => <td key={r} className="num">{s.routes[r] && s.routes[r][k] != null ? f(s.routes[r][k] as number) : "—"}</td>)}</tr>
+                <tr key={k}><td>{label}</td>{routes.map((r) => <td key={r} className="num">{s.routes?.[r] && s.routes[r][k] != null ? f(s.routes[r][k] as number) : "—"}</td>)}</tr>
               ))}
             </tbody>
           </table>
