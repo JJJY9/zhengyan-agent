@@ -22,6 +22,9 @@ STARTUP_RECOVER_AGE_S = 600       # 启动即回收：一次模型调用最长 3
 class Services:
     deps: Deps
     research: ResearchService
+    # 只有服务进程（uvicorn）启动时才回收僵尸任务：CLI 每次命令都会构造 Services，
+    # 若无条件回收会把其它进程正在跑的研究任务标成失败
+    recover_stale: bool = False
     rsi: RSIRunner = field(init=False)
     profiles: ProfileStore = field(init=False)
     watch: Watcher = field(init=False)
@@ -29,8 +32,9 @@ class Services:
 
     def __post_init__(self):
         db = self.deps.repo.db
-        # 进程重启后把上一实例遗留的 queued/running 任务标记失败（短阈值：重启前的任务线程已不存在）
-        self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S)
+        if self.recover_stale:
+            # 服务进程重启后把上一实例遗留的 queued/running 任务标记失败（重启前的任务线程已不存在）
+            self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S)
         self.rsi = RSIRunner(self.deps, self.deps.ledger, self.deps.rsi)
         self.profiles = ProfileStore(db)
         self.watch = Watcher(self.deps, WatchStore(db))
@@ -64,11 +68,11 @@ class Services:
         return self.research.submit(fn, *args)
 
 
-def build_services(deps: Deps | None = None, checkpointer=None) -> Services:
+def build_services(deps: Deps | None = None, checkpointer=None, recover_stale: bool = False) -> Services:
     if deps is None:
         from langgraph.checkpoint.mongodb import MongoDBSaver
 
         from advisor.graph.deps import build_default_deps
         deps = build_default_deps()
         checkpointer = MongoDBSaver(deps.repo.db.client, db_name=f"{deps.repo.db.name}_checkpoints")
-    return Services(deps, ResearchService(deps, checkpointer))
+    return Services(deps, ResearchService(deps, checkpointer), recover_stale=recover_stale)

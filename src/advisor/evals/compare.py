@@ -88,7 +88,7 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                     if task["status"] == "waiting_approval":
                         # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续
                         entry["auto_approved"] = True
-                        svc.research.resume(tid, True, background=False)
+                        (getattr(svc, "research", None) or svc).resume(tid, True, background=False)
                         task = repo.get_task(tid)
                     if task["status"] == "done":
                         d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])

@@ -161,8 +161,8 @@ class StrategyBook:
         prev = max((r for r in retired if r.promoted_at), key=lambda r: r.promoted_at, default=None)
         if prev is None:                       # 旧数据没有 promoted_at：退回按版本号推断
             prev = next((r for r in retired if r.version < cur.version), None)
+        if prev is None:                       # 回滚后没有可生效的版本：拒绝，避免「已回滚但无在用版本」的误导状态
+            raise StrategyError(f"{card_id} 没有上一个晋级过的版本，无法回滚")
         self._move(cur, "rolled_back", "rollback", actor, reason)
-        if prev:
-            return self._move(prev, "promoted", "restore", actor, f"因回滚 {cur.ref} 重新生效",
-                              promoted_at=datetime.now(timezone.utc))
-        return cur.model_copy(update={"status": "rolled_back"})
+        return self._move(prev, "promoted", "restore", actor, f"因回滚 {cur.ref} 重新生效",
+                          promoted_at=datetime.now(timezone.utc))
