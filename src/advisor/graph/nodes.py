@@ -432,6 +432,14 @@ class Nodes:
         )
         evidence = {c.id: c for c in _cards(state)}
         prior_v = (state.get("prior") or {}).get("version")
+        if prior_v is not None and dossier.parent_version != prior_v:
+            # 研究开始载入的对照版本与提交快照不一致：即便首次插入成功也要在档案里自述
+            note = (f"并发提交：上一版本在本任务研究期间由 v{prior_v} 变为 v{dossier.parent_version}，"
+                    "已按最新版本续链")
+            if dossier.prior_review:
+                note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+            self._event(state, "commit", note)
+            dossier = dossier.model_copy(update={"boundary_notes": [*dossier.boundary_notes, note]})
         for attempt in range(3):
             # 同 key 并发提交会同时算出版本号与父版本：撞唯一索引后两者都要按当前库重算，
             # 否则重试后的新版本挂着旧 parent，版本链分叉、diff 基准错位

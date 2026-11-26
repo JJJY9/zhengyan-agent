@@ -38,6 +38,8 @@ class ResearchService:
         # 进程租约：回收僵尸任务只信租约（排队中的任务没有心跳，年龄判定会误杀）；
         # 与 deps 共用同一标识：评测等后台文档按它判定所属进程是否还活着
         self.instance = deps.instance
+        self._futures: dict[Any, str] = {}          # 后台研究 future → task_id（停机收尾排队取消用）
+        self._fut_lock = threading.Lock()
         self._hb_stop = threading.Event()
         threading.Thread(target=self._heartbeat, name="advisor-lease", daemon=True).start()
         self.guard = EgressGuard(
@@ -64,6 +66,12 @@ class ResearchService:
         try:
             self.deps.repo.cancel_queued_tasks(self.instance, "服务停止：排队中的任务已取消")
             self.deps.repo.fail_instance_evals(self.instance, "服务停止，评测中断；可重新发起")
+            with self._fut_lock:
+                cancelled = [tid for f, tid in self._futures.items() if f.cancelled()]
+                self._futures.clear()
+            for task_id in cancelled:   # 已批准但排队即被取消：_run 永不执行，明确收尾防止悬挂
+                self.deps.repo.finish_task(task_id, "cancelled",
+                                           error="服务停止：已批准的恢复未执行，可重新发起")
         except Exception:      # noqa: BLE001
             pass
 
@@ -191,9 +199,18 @@ class ResearchService:
     def _submit(self, task_id: str, payload: Any, background: bool) -> None:
         """调用前必须已 _acquire_or_raise()；名额由 _guarded 在作业结束时释放。"""
         if background:
-            self._pool.submit(self._guarded, self._run, task_id, payload)
+            fut = self._pool.submit(self._guarded, self._run, task_id, payload)
+            with self._fut_lock:
+                self._futures[fut] = task_id
+            fut.add_done_callback(self._forget_future)
         else:
             self._guarded(self._run, task_id, payload)
+
+    def _forget_future(self, fut) -> None:
+        if fut.cancelled():
+            return                     # 停机时排队即被取消：留给 shutdown 统一收尾
+        with self._fut_lock:
+            self._futures.pop(fut, None)
 
     def _run(self, task_id: str, payload: Any) -> None:
         repo = self.deps.repo
@@ -208,14 +225,16 @@ class ResearchService:
             pending = [i for t in snapshot.tasks for i in t.interrupts]
             if pending:
                 # 存下 interrupt id：恢复时按 id 定向投递，深研多专家并行待审批时裸值会送错任务
-                if not repo.finish_task(task_id, "waiting_approval",
+                if not repo.finish_task(task_id, "waiting_approval", instance=self.instance,
+                                        repair_recovered=True,
                                         interrupt={**pending[0].value, "issued_at": time.time(),
                                                    "interrupt_id": pending[0].id}):
                     repo.push_event(task_id, "runner", "任务已被回收/取消，忽略等待审批状态写入")
                 return
             status = result.get("status", "done")
             if not repo.finish_task(
-                task_id, status, error=result.get("error"),
+                task_id, status, instance=self.instance, repair_recovered=True,
+                error=result.get("error"),
                 result={"dossier_key": result.get("dossier_key"), "version": result.get("version"),
                         "quality": result.get("quality"), "budget": result.get("budget"), "route": result.get("route"),
                         "routing": result.get("routing")},
@@ -223,7 +242,8 @@ class ResearchService:
                 repo.push_event(task_id, "runner", "任务已被回收/取消，忽略收尾状态写入（拒绝复活）")
         except TaskCancelled as e:
             repo.push_event(task_id, "runner", str(e))
-            repo.finish_task(task_id, "cancelled")
+            repo.finish_task(task_id, "cancelled", instance=self.instance, repair_recovered=True)
         except Exception as e:  # 失败可见，不吞错误
             repo.push_event(task_id, "runner", f"异常：{type(e).__name__}: {e}")
-            repo.finish_task(task_id, "failed", error=f"{type(e).__name__}: {e}")
+            repo.finish_task(task_id, "failed", instance=self.instance, repair_recovered=True,
+                             error=f"{type(e).__name__}: {e}")

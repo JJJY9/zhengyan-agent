@@ -34,7 +34,8 @@ class Services:
         db = self.deps.repo.db
         if self.recover_stale:
             # 服务进程重启后把上一实例遗留的 queued/running 任务标记失败（重启前的任务线程已不存在）
-            self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S, lease_ttl_s=90)
+            self.deps.repo.recover_stale_tasks(STARTUP_RECOVER_AGE_S, lease_ttl_s=90,
+                                              exclude_instance=self.deps.instance)
             self.deps.repo.recover_stale_evals(lease_ttl_s=90)   # 评测按实例租约回收
         self.rsi = RSIRunner(self.deps, self.deps.ledger, self.deps.rsi)
         self.profiles = ProfileStore(db)

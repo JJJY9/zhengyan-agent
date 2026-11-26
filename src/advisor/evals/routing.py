@@ -58,7 +58,8 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
         rows = []
         for i, case in enumerate(cases):
             if i and i % 5 == 0:                 # 周期性刷新 updated_at：僵尸回收按停滞时长判定
-                repo.save_eval(running_doc)
+                if not repo.save_eval(running_doc, only_if_running=True):
+                    raise RuntimeError("评测已被停机/回收标记失败")
             h = deps.harness(f"eval-{run_id}", "quick", date.today(), Budget(limits={"tokens": 20000, "wall_clock_s": 120}),
                              node="route_eval", principal="evaluator")
             d = decide_route(h, case["question"], case.get("intent", "research"), "auto", cfg)
@@ -78,7 +79,8 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
             "calibration": fit(model_rows, float(cfg.get("abstain_below", 0.55))) if model_rows else {},
             "current": {"temperature": cfg.get("temperature", 1.0), "abstain_below": cfg.get("abstain_below", 0.55)},
         }
-        repo.save_eval(run)
+        if not repo.save_eval(run, only_if_running=True):
+            return run_id                 # 已标失败：保留中断状态，不写回 done
     except Exception as e:  # noqa: BLE001  失败也要在列表里可见
         repo.save_eval({"run_id": run_id, "type": "routing", "status": "failed",
                         "error": f"{type(e).__name__}: {e}", "created_at": datetime.now(timezone.utc)})

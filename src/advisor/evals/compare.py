@@ -106,7 +106,8 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                                        "text": "评测进行中：结论在全部用例完成后给出"}
                 run["summary"] = progress
                 run["status"] = "running"
-                repo.save_eval(run)
+                if not repo.save_eval(run, only_if_running=True):
+                    raise RuntimeError("评测已被停机/回收标记失败")
         run["summary"] = summarize(run["results"])
         run["status"] = "done"
     except Exception as e:  # noqa: BLE001  任何意外都落成 failed：评测页不会永远停在「进行中」
@@ -116,5 +117,6 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
             done_n = len(run.get("results") or [])
             run["summary"]["verdict"] = {"decision": "insufficient", "provisional": True,
                                          "text": f"评测中断：已完成 {done_n} 例，结论不可用；可重新发起"}
-    repo.save_eval(run)
+    # done 只在库内仍 running 时写回：停机/回收已标失败时不覆盖，保留中断结论
+    repo.save_eval(run, only_if_running=(run["status"] == "done"))
     return run_id

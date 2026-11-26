@@ -57,7 +57,8 @@ class Scheduler:
                 return
             try:
                 repo = self.services.deps.repo     # 回收是尽力而为：拿不到仓库也不能拖死定时线程
-                repo.recover_stale_tasks(1800)      # 属主已死的任务最迟一个租约周期内回收
+                repo.recover_stale_tasks(1800,      # 属主已死的任务最迟一个租约周期内回收；绝不回收自己的
+                                         exclude_instance=getattr(self.services.deps, "instance", None))
                 repo.recover_stale_evals()
             except Exception:      # noqa: BLE001
                 log.exception("僵尸回收失败")
