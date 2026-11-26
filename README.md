@@ -54,16 +54,18 @@ docker compose --profile test run --rm test
 
 前置：Python 3.12+；Node 18+；`uv`（`python3 -m pip install --user uv`）。没有 uv 时可用 `pip install -r requirements.txt -r requirements-dev.txt && pip install -e .` 代替 `uv sync`。
 
+先创建 .env（Compose 会解析整个项目，即使只启动 mongo 也要求它存在）：
+
+```bash
+cp .env.example .env   # 填入 DEEPSEEK_API_KEY
+```
+
 ```bash
 docker compose up -d mongo
 ```
 
 ```bash
 uv sync
-```
-
-```bash
-cp .env.example .env   # 填入 DEEPSEEK_API_KEY
 ```
 
 ```bash

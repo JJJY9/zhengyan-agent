@@ -61,33 +61,65 @@ class EgressGuard:
             raise HarnessDenied("出域内容含个人敏感信息，已阻断")
 
     def redact(self, text: str) -> str:
-        """命中个人敏感信息时，把命中所在行的数字整体遮蔽。
+        """命中个人敏感信息时，把命中覆盖到的行的数字整体遮蔽。
 
         consent 承诺「这些信息会被脱敏」：同一条个人描述里的成本、股数、账号常常落在正则命中片段之外，
-        只替换片段会原样出域。逐行处理：命中行归一化后整体遮蔽，其他行原样保留
-        （归一化会合并日期里的连字符，绝不能套用到证据区）。
+        只替换片段会原样出域。定位必须与 find_sensitive 完全同口径：按「空行分块」，块内对整段做
+        归一化（数字之间的空白/连字符、包括换行都会被合并——手机号「1381234\n5678」按整段才算命中），
+        命中 span 覆盖到哪几行就整体遮蔽哪几行的数字；空行是硬屏障，问题区与证据区不会互相桥接。
         """
         lines = (text or "").splitlines() or [""]
-        norm_lines = [_normalize(line) for line in lines]
-        # 模式可能跨行命中（「我持有 + 换行 + 成本 120 元」）：跨行命中时被跨过的行也要整体遮蔽数字，
-        # 否则 consent 说好的脱敏会在第二行漏出金额
-        offsets, pos = [], 0
-        for nl in norm_lines:
-            offsets.append((pos, pos + len(nl)))
-            pos += len(nl) + 1
-        hit = set()
-        for start, end in self._spans("\n".join(norm_lines)):
-            for i, (a, b) in enumerate(offsets):
-                if start <= b and end >= a:
-                    hit.add(i)
-        out = []
+        out = list(lines)
+        blocks: list[list[int]] = []
+        cur: list[int] = []
         for i, line in enumerate(lines):
-            norm = norm_lines[i]
-            spans = self._spans(norm)
-            if not spans and i not in hit:
-                out.append(line)
+            if not line.strip():
+                if cur:
+                    blocks.append(cur)
+                    cur = []
                 continue
-            for start, end in reversed(spans):
-                norm = norm[:start] + "[已脱敏]" + norm[end:]
-            out.append(_DIGITS.sub("[已脱敏]", norm))
+            cur.append(i)
+        if cur:
+            blocks.append(cur)
+        sep_chars = set("-–—－")
+        for idxs in blocks:
+            group = [lines[i] for i in idxs]
+            joined = "\n".join(group)
+            line_of: list[int] = []
+            for li, part in enumerate(group):
+                line_of.extend([li] * len(part))
+                if li < len(group) - 1:
+                    line_of.append(li)          # 换行符归属上一行
+            norm_chars: list[str] = []
+            norm_line: list[int] = []
+            j, n = 0, len(joined)
+            prev_digit = False
+            while j < n:
+                ch = joined[j]
+                if ord(ch) in _FORMAT_CHARS:
+                    j += 1                      # 零宽等格式字符不参与归一化
+                    continue
+                t = ch.translate(_FULLWIDTH)
+                if prev_digit and (t in sep_chars or t.isspace()):
+                    k = j + 1
+                    while k < n and (joined[k] in sep_chars or joined[k].isspace()
+                                     or ord(joined[k]) in _FORMAT_CHARS):
+                        k += 1
+                    if k < n and joined[k].translate(_FULLWIDTH).isdigit():
+                        j = k                       # 数字之间的分隔（含换行）整体合并
+                        continue
+                norm_chars.append(t)
+                norm_line.append(line_of[j])
+                prev_digit = t.isdigit()
+                j += 1
+            norm = "".join(norm_chars)
+            hit = set()
+            for start, end in self._spans(norm):
+                for k in range(start, min(end, len(norm_line))):
+                    hit.add(norm_line[k])
+            for li in hit:
+                gline = _normalize(group[li])
+                for start, end in reversed(self._spans(gline)):
+                    gline = gline[:start] + "[已脱敏]" + gline[end:]
+                out[idxs[li]] = _DIGITS.sub("[已脱敏]", gline)
         return "\n".join(out)
