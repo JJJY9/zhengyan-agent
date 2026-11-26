@@ -145,7 +145,9 @@ export default function DossierView() {
             <p className="muted small">问题：{d.question}</p>
             {d.boundary_notes.map((n, i) => <div key={i} className="notice">{n}</div>)}
           </section>
-          <PersonalPanel ticker={d.ticker} version={d.version} />
+          {d.key === d.ticker
+            ? <PersonalPanel ticker={d.ticker} version={d.version} />
+            : <section className="card"><h3 style={{ margin: 0 }}>个人情境</h3><p className="muted small" style={{ marginBottom: 0 }}>评测档案（隔离命名空间）不做个人情境对照。</p></section>}
 
           {d.routing && <RoutingCard r={d.routing} />}
 

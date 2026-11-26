@@ -31,9 +31,8 @@ export function RuleEditor({ rules, fields, onChange }: { rules: Rule[]; fields:
             {Object.entries(fields).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
           </select>
           <select value={r.op} onChange={(e) => set(i, { op: e.target.value as Rule["op"] })}>{OPS.map((o) => <option key={o}>{o}</option>)}</select>
-          {r.field === "status"
-            ? <input value={String(r.value)} onChange={(e) => set(i, { value: e.target.value })} />
-            : <input type="number" value={Number(r.value)} onChange={(e) => set(i, { value: Number(e.target.value || 0) })} />}
+          {/* 编辑期保留字符串：数字框中途输入「-」「.」不会因立即 Number() 而丢失符号；提交前统一转换校验 */}
+          <input type={r.field === "status" ? "text" : "number"} value={String(r.value)} onChange={(e) => set(i, { value: e.target.value })} />
           <button className="ghost" onClick={() => onChange(rules.filter((_, k) => k !== i))} aria-label="删除规则">删除</button>
         </div>
       ))}

@@ -34,6 +34,7 @@ export default function Evals() {
         const r = await api.evalRun(id);
         if (!alive) return;
         setRun(r);
+        setMsg("");        // 轮询成功后清掉历史错误，避免错误提示永久残留
         if (r.status === "running") timer = window.setTimeout(load, 4000);
       } catch (e) {
         if (!alive) return;
@@ -127,7 +128,7 @@ function CompareView({ run }: { run: EvalRun }) {
   return (
     <div>
       {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
-      {v && v.decision === "insufficient" && (
+      {v && v.decision === "insufficient" && run.status !== "running" && (   // 运行中不判「不完整」
         <div className="card warnbox">
           <div>
             <h3>{v.text}</h3>

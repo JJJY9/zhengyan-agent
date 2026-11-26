@@ -154,6 +154,7 @@ const ACTIVE = new Set(["queued", "running"]);
 function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
   const [task, setTask] = useState<Task | null>(null);
   const [summary, setSummary] = useState<string>("");
+  const [decideErr, setDecideErr] = useState("");
   const [tick, setTick] = useState(0);
   const doneRef = useRef(false);
   useEffect(() => {
@@ -164,6 +165,7 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
         if (!alive) return;
         setTask(t);
         if (ACTIVE.has(t.status)) timer = window.setTimeout(load, 2000);
+        else if (t.status === "waiting_approval") timer = window.setTimeout(load, 5000);
         else if (t.status === "done" && t.result && !doneRef.current) {
           doneRef.current = true;
           onDone();
@@ -176,7 +178,8 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
   }, [turn.task_id, onDone, tick]);
 
   const decide = async (approve: boolean) => {
-    await api.resume(turn.task_id, approve);
+    setDecideErr("");
+    try { await api.resume(turn.task_id, approve); } catch (e) { setDecideErr((e as Error).message); }
     setTask((t) => t && { ...t, status: "running", interrupt: null });
     setTick((x) => x + 1);        // 审批后任务回到 running：重新接上轮询，spinner 和结果才能继续更新
   };
@@ -197,16 +200,22 @@ function TurnView({ turn, onDone }: { turn: Turn; onDone: () => void }) {
             {shown.map((e, i) => <li key={i}><b>{nodeLabel(e.node)}</b>{e.message}</li>)}
           </ul>
         )}
-        {task?.status === "waiting_approval" && task.interrupt && (
-          <div className="card approval" style={{ margin: 0 }}>
-            <div>{task.interrupt.message}</div>
-            {task.interrupt.items?.length ? <ul>{task.interrupt.items.map((x, i) => <li key={i}>{x}</li>)}</ul> : null}
-            <div className="row-btns" style={{ marginTop: 8 }}>
-              <button className="primary" onClick={() => decide(true)}>同意，继续</button>
-              <button onClick={() => decide(false)}>拒绝</button>
+        {task?.status === "waiting_approval" && task.interrupt && (() => {
+          const it = task.interrupt!;
+          const expired = !!(it.ttl_s && it.issued_at && Date.now() / 1000 > it.issued_at + it.ttl_s);
+          return (
+            <div className="card approval" style={{ margin: 0 }}>
+              <div>{it.message}</div>
+              {it.items?.length ? <ul>{it.items.map((x, i) => <li key={i}>{x}</li>)}</ul> : null}
+              {expired && <div className="warn-text">审批已过期：此时点同意会被按拒绝处理，请拒绝后重新发起。</div>}
+              {decideErr && <div className="error">{decideErr}</div>}
+              <div className="row-btns" style={{ marginTop: 8 }}>
+                <button className="primary" disabled={expired} onClick={() => decide(true)}>同意，继续</button>
+                <button onClick={() => decide(false)}>拒绝</button>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
         {task?.status === "done" && task.result && (
           <div className="result-card">
             <div className="title-row"><b>档案 {task.result.dossier_key} v{task.result.version}</b>

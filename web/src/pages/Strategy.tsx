@@ -40,7 +40,16 @@ export default function Strategy() {
     setError("");
     try {
       const { universe, ...rest } = form;
-      const v = await api.strategy.create({ ...rest, universe: universe.split(/[,，\s]+/).filter(Boolean) });
+      const cast = (rules: Rule[]): Rule[] => rules.map((r) => (r.field === "status" ? r : { ...r, value: Number(r.value) }));
+      for (const r of [...rest.entry, ...rest.exit]) {
+        if (r.field !== "status" && !Number.isFinite(Number(r.value))) {
+          setError(`阈值必须是数字（${r.field} 当前为「${String(r.value)}」）`);
+          setBusy(false);
+          return;
+        }
+      }
+      const v = await api.strategy.create({ ...rest, entry: cast(rest.entry), exit: cast(rest.exit),
+                                           universe: universe.split(/[,，\s]+/).filter(Boolean) });
       nav(`/strategy/${v.card_id}/${v.version}`);
     } catch (e) { setError((e as Error).message); setBusy(false); }
   };
