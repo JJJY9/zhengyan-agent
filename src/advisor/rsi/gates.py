@@ -67,11 +67,22 @@ def industry_hits(text: str, scope: str | None) -> list[str]:
     return out
 
 
+_FORMAT_CHARS = dict.fromkeys(map(ord, "​‌‍‎‏‪‫‬‭‮⁠⁦⁧⁨⁩﻿"), None)
+# 模型生成文本的注入检测用严格模式：只认「忽略…指令/提示词/系统」与英文 ignore/disregard/system prompt 家族。
+# 网页清洗的宽泛模式会把「规则/要求/限制」等普通词当注入，误伤合法经验卡与搜索侧重
+_GATE_INJECTION = re.compile(
+    r"忽略[^。！？!?\n]{0,16}(指令|提示词?|系统提示)"
+    r"|ignore\s+(?:all\s+|the\s+)?(?:previous|above|prior|earlier|system|your)"
+    r"|disregard\s+(?:all\s+|the\s+)?(?:previous|above|prior|instructions?|system)"
+    r"|system\s+prompt|developer\s+mode|<\|im_start\|>|###\s*(?:system|instruction)",
+    re.I,
+)
+
+
 def _injection_problems(who: str, text: str) -> list[str]:
     """模型生成的卡片/搜索侧重会进入生产提示词与判官提示词：疑似指令注入直接拒绝发布。"""
-    from advisor.evidence import sanitize as clean
-    _, suspicious = clean(text)
-    return [f"{who} 含疑似指令注入文本"] if suspicious else []
+    stripped = (text or "").translate(_FORMAT_CHARS)
+    return [f"{who} 含疑似指令注入文本"] if _GATE_INJECTION.search(stripped) else []
 
 
 def _text_problems(who: str, text: str, names: set[str], scope: str | None) -> list[str]:

@@ -54,11 +54,11 @@ def test_session_store_expiry_and_cap():
 def test_login_throttle_window():
     now = [0.0]
     t = _LoginThrottle(limit=2, window_s=60, now=lambda: now[0])
-    t.fail("ip")
-    t.fail("ip")
-    assert t.blocked("ip")
+    t.fail("ip", "admin")
+    t.fail("ip", "admin")
+    assert t.blocked("ip", "admin")
     now[0] = 61
-    assert not t.blocked("ip")
+    assert not t.blocked("ip", "admin")
 
 
 def test_large_body_rejected_before_auth(service):
