@@ -35,8 +35,9 @@ class ResearchService:
         self._side_pool = ThreadPoolExecutor(max_workers=side_workers, thread_name_prefix="sidejob")
         self._side_gate = threading.Lock()
         self._side_pending = 0
-        # 进程租约：回收僵尸任务只信租约（排队中的任务没有心跳，年龄判定会误杀）
-        self.instance = "inst_" + uuid.uuid4().hex[:10]
+        # 进程租约：回收僵尸任务只信租约（排队中的任务没有心跳，年龄判定会误杀）；
+        # 与 deps 共用同一标识：评测等后台文档按它判定所属进程是否还活着
+        self.instance = deps.instance
         self._hb_stop = threading.Event()
         threading.Thread(target=self._heartbeat, name="advisor-lease", daemon=True).start()
         self.guard = EgressGuard(
@@ -53,12 +54,16 @@ class ResearchService:
                 return
 
     def shutdown(self) -> None:
-        """服务停机：停止续租、取消排队中的作业与任务，把注定不会再执行的任务标取消。"""
-        self._hb_stop.set()
+        """服务停机：取消排队作业与任务、收尾本实例未完成的评测。
+
+        心跳线程不在这里停：进程可能仍在排空在跑任务，停租约会让并行启动的新实例
+        把它们当无主任务标失败；守护线程随进程退出即消失，租约随后自然过期。
+        """
         for pool in (self._side_pool, self._pool):
             pool.shutdown(wait=False, cancel_futures=True)
         try:
             self.deps.repo.cancel_queued_tasks(self.instance, "服务停止：排队中的任务已取消")
+            self.deps.repo.fail_instance_evals(self.instance, "服务停止，评测中断；可重新发起")
         except Exception:      # noqa: BLE001
             pass
 
@@ -114,7 +119,7 @@ class ResearchService:
         try:
             # 原子夺取「待审批 → 运行中」：并发双击/客户端重试只有一次真正恢复，
             # 否则同一 thread 会被提交两次 Command(resume)，主席与提交节点重放、生成两份档案
-            if not self.deps.repo.try_resume_task(task_id):
+            if not self.deps.repo.try_resume_task(task_id, instance=self.instance):
                 raise ValueError("任务已被另一次恢复操作接管")
             # 审批等待（含停机）不计入执行时限：暂停时长记进任务账本，预算检查按开始时间扣除；
             # 不对暂停中的图做 update_state——那会重写检查点、破坏中断的 resume 重放顺序
@@ -193,7 +198,7 @@ class ResearchService:
     def _run(self, task_id: str, payload: Any) -> None:
         repo = self.deps.repo
         config = {"configurable": {"thread_id": task_id}, "recursion_limit": 60}
-        if not repo.mark_running(task_id):
+        if not repo.mark_running(task_id, instance=self.instance):
             return                     # 已被回收/取消：绝不复活执行
         repo.touch_lease(self.instance)
         try:
@@ -203,19 +208,22 @@ class ResearchService:
             pending = [i for t in snapshot.tasks for i in t.interrupts]
             if pending:
                 # 存下 interrupt id：恢复时按 id 定向投递，深研多专家并行待审批时裸值会送错任务
-                repo.update_task(task_id, status="waiting_approval",
-                                 interrupt={**pending[0].value, "issued_at": time.time(), "interrupt_id": pending[0].id})
+                if not repo.finish_task(task_id, "waiting_approval",
+                                        interrupt={**pending[0].value, "issued_at": time.time(),
+                                                   "interrupt_id": pending[0].id}):
+                    repo.push_event(task_id, "runner", "任务已被回收/取消，忽略等待审批状态写入")
                 return
             status = result.get("status", "done")
-            repo.update_task(
-                task_id, status=status, error=result.get("error"),
+            if not repo.finish_task(
+                task_id, status, error=result.get("error"),
                 result={"dossier_key": result.get("dossier_key"), "version": result.get("version"),
                         "quality": result.get("quality"), "budget": result.get("budget"), "route": result.get("route"),
                         "routing": result.get("routing")},
-            )
+            ):
+                repo.push_event(task_id, "runner", "任务已被回收/取消，忽略收尾状态写入（拒绝复活）")
         except TaskCancelled as e:
             repo.push_event(task_id, "runner", str(e))
-            repo.update_task(task_id, status="cancelled")
+            repo.finish_task(task_id, "cancelled")
         except Exception as e:  # 失败可见，不吞错误
             repo.push_event(task_id, "runner", f"异常：{type(e).__name__}: {e}")
-            repo.update_task(task_id, status="failed", error=f"{type(e).__name__}: {e}")
+            repo.finish_task(task_id, "failed", error=f"{type(e).__name__}: {e}")

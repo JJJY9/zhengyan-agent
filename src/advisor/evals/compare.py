@@ -72,7 +72,8 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
     run_id = run_id or "ev_" + uuid.uuid4().hex[:8]
     run = repo.get_eval(run_id) or {"run_id": run_id, "type": "compare", "routes": routes, "cases": cases,
                                     "results": [], "created_at": datetime.now(timezone.utc)}
-    run.update(status="running", routes=routes, cases=cases)
+    run.update(status="running", routes=routes, cases=cases,
+               instance=getattr(getattr(svc, "research", None) or svc, "instance", None))
     run.setdefault("results", [])
     repo.save_eval(run)
     try:
@@ -111,5 +112,9 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
     except Exception as e:  # noqa: BLE001  任何意外都落成 failed：评测页不会永远停在「进行中」
         run["status"] = "failed"
         run["error"] = f"{type(e).__name__}: {e}"
+        if run.get("summary"):
+            done_n = len(run.get("results") or [])
+            run["summary"]["verdict"] = {"decision": "insufficient", "provisional": True,
+                                         "text": f"评测中断：已完成 {done_n} 例，结论不可用；可重新发起"}
     repo.save_eval(run)
     return run_id

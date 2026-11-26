@@ -48,7 +48,8 @@ def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
     # 先登记 running：评测期间列表可见、前端能接上进度；任何异常落成 failed，不会静默消失。
     # 金标文件读取也放进 try：读失败同样要落 failed，不能把 running 挂着（后台异常会被线程池吞掉）
     running_doc = {"run_id": run_id, "type": "routing", "status": "running",
-                   "created_at": datetime.now(timezone.utc)}
+                   "created_at": datetime.now(timezone.utc),
+                   "instance": getattr(deps, "instance", None)}
     repo.save_eval(running_doc)
     try:
         cases = json.loads(path.read_text(encoding="utf-8"))["cases"]

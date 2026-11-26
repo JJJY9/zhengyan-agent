@@ -1,6 +1,7 @@
 """依赖容器：组装策略、Skill 注册中心、存储、模型与证据工厂。"""
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import uuid
 from threading import Lock
 from typing import Any
 
@@ -26,6 +27,7 @@ class Deps:
     rsi: RSILoader | None = None
     ledger: Ledger | None = None
     decision: Any = None          # 决策小模型（Kev/Jev）；None 时路由只用大模型
+    instance: str = field(default_factory=lambda: "proc_" + uuid.uuid4().hex[:10])   # 进程级租约标识
     _task_caches: OrderedDict = field(default_factory=OrderedDict, repr=False)
     _task_flights: OrderedDict = field(default_factory=OrderedDict, repr=False)
     _cache_lock: Lock = field(default_factory=Lock, repr=False)

@@ -157,15 +157,24 @@ class Repository:
         ts = doc["ts"] if doc["ts"].tzinfo else doc["ts"].replace(tzinfo=timezone.utc)
         return ts > _now() - timedelta(seconds=ttl_s)
 
-    def mark_running(self, task_id: str) -> bool:
-        """CAS 启动：只有仍处于 queued/running 的任务才真正执行。
+    def mark_running(self, task_id: str, instance: str | None = None) -> bool:
+        """CAS 启动：只有仍处于 queued/running 的任务才真正执行，并重绑归属。
 
         回收/取消可能已把任务标为 failed/cancelled：此时绝不能再「复活」执行。"""
+        fields = {"status": "running", "updated_at": _now()}
+        if instance:
+            fields["instance"] = instance
         doc = self.db.tasks.find_one_and_update(
             {"task_id": task_id, "status": {"$in": ["queued", "running"]}},
-            {"$set": {"status": "running", "updated_at": _now()}},
+            {"$set": fields},
         )
         return doc is not None
+
+    def finish_task(self, task_id: str, status: str, **fields: Any) -> bool:
+        """带 status=running 条件的收尾：被回收/取消的任务不允许再写回终态。"""
+        fields.update(status=status, updated_at=_now())
+        res = self.db.tasks.update_one({"task_id": task_id, "status": "running"}, {"$set": fields})
+        return res.matched_count == 1
 
     def cancel_queued_tasks(self, instance: str, reason: str) -> int:
         """服务停机：本实例还在排队、注定不会再执行的任务直接标取消。"""
@@ -179,11 +188,17 @@ class Repository:
         fields["updated_at"] = _now()
         self.db.tasks.update_one({"task_id": task_id}, {"$set": fields})
 
-    def try_resume_task(self, task_id: str) -> bool:
-        """原子地把「待审批」任务切到运行中；并发双击/客户端重试只有一个能成功。"""
+    def try_resume_task(self, task_id: str, instance: str | None = None) -> bool:
+        """原子地把「待审批」任务切到运行中；并发双击/客户端重试只有一个能成功。
+
+        恢复方通常与创建方不是同一进程：同一 CAS 里把 instance 重绑到当前进程，
+        否则租约回收会把刚被批准的任务当成旧进程遗留标失败（审批静默丢失）。"""
+        fields = {"status": "running", "interrupt": None, "updated_at": _now()}
+        if instance:
+            fields["instance"] = instance
         doc = self.db.tasks.find_one_and_update(
             {"task_id": task_id, "status": "waiting_approval"},
-            {"$set": {"status": "running", "interrupt": None, "updated_at": _now()}},
+            {"$set": fields},
         )
         return doc is not None
 
@@ -302,16 +317,37 @@ class Repository:
     def list_evals(self, limit: int = 20) -> list[dict]:
         return list(self.db.eval_runs.find({}, projection={"_id": 0}).sort("created_at", DESCENDING).limit(limit))
 
-    def recover_stale_evals(self, max_age_s: float = 3600) -> int:
-        """服务重启后回收僵尸评测：running 且长时间无进展（进度每例刷新 updated_at）的标记失败。
-
-        评测没有实例租约：阈值按「单例研究最长时限 + 余量」取值，只在启动回收路径调用，
-        不会误杀正在跑的评测。"""
+    def recover_stale_evals(self, max_age_s: float = 3600, lease_ttl_s: float = 180.0) -> int:
+        """回收僵尸评测：所属进程租约已死的 running 评测立即标 failed；
+        历史无 instance 的文档退回按停滞时长（进度每例刷新 updated_at）。"""
         cutoff = _now() - timedelta(seconds=max_age_s)
+        ids: list[str] = []
+        alive: dict[str, bool] = {}
+        for d in self.db.eval_runs.find({"status": "running"},
+                                        projection={"run_id": 1, "instance": 1, "updated_at": 1}):
+            inst = d.get("instance")
+            if inst:
+                if inst not in alive:
+                    alive[inst] = self.lease_alive(inst, lease_ttl_s)
+                if alive[inst]:
+                    continue
+            elif not (d.get("updated_at") and d["updated_at"] < cutoff):
+                continue
+            ids.append(d["run_id"])
+        if not ids:
+            return 0
         res = self.db.eval_runs.update_many(
-            {"status": "running", "updated_at": {"$lt": cutoff}},
+            {"run_id": {"$in": ids}, "status": "running"},
             {"$set": {"status": "failed", "updated_at": _now(),
-                      "error": "进程重启或长时间无进展，评测中断；可重新发起"}},
+                      "error": "评测所属进程已不在，已标记失败；可重新发起"}},
+        )
+        return res.modified_count
+
+    def fail_instance_evals(self, instance: str, reason: str) -> int:
+        """优雅停机：本实例登记且未完成的评测直接标 failed（排队作业已被取消）。"""
+        res = self.db.eval_runs.update_many(
+            {"status": "running", "instance": instance},
+            {"$set": {"status": "failed", "updated_at": _now(), "error": reason}},
         )
         return res.modified_count
 
