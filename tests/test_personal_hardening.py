@@ -115,7 +115,7 @@ def test_fit_endpoint_counts_reviewing_alert(repo, policy):
     alert = Alert(id="al_x", ticker=CODE, name="示例酒业", dossier_key=CODE, dossier_version=1,
                   fingerprint="fp", events=[], affected=[], created_at=NOW)
     store.add_alert(alert)
-    store.try_start_review(alert.id)                             # status=reviewing
+    store.claim_review(alert.id)                             # status=reviewing
     with TestClient(create_app(deps=deps)) as c:
         fit = c.get(f"/api/profile/fit/{CODE}").json()["fit"]
     fresh = next(x for x in fit["checks"] if x["key"] == "freshness")

@@ -2,6 +2,7 @@
 import logging
 import threading
 
+from advisor.harness import TaskCancelled
 from advisor.services import Services
 
 log = logging.getLogger("advisor.scheduler")
@@ -20,18 +21,28 @@ class Scheduler:
         return self
 
     def stop(self) -> None:
+        """置停止位并等待当前 tick 在检查点退出：守护线程在净值/成交两次写之间被杀会留下缺失成交。"""
         self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=15)
 
     def tick(self) -> None:
-        # 两个子系统各自兜底：订阅扫描失败不能拖累模拟盘推进（反之亦然）
+        # 两个子系统各自兜底：订阅扫描失败不能拖累模拟盘推进（反之亦然）；停机时在检查点退出
         try:
-            alerts = self.services.watch.scan_all(log=log.info)
+            alerts = self.services.watch.scan_all(log=log.info, is_cancelled=self._stop.is_set)
             log.info("定时任务：新提醒 %d", len(alerts))
+        except TaskCancelled:
+            log.info("停机：订阅扫描在检查点停止")
+            return
         except Exception:
             log.exception("订阅扫描失败")
+        if self._stop.is_set():
+            return
         try:
-            points = self.services.strategy.step_all(log=log.info)
+            points = self.services.strategy.step_all(log=log.info, is_cancelled=self._stop.is_set)
             log.info("定时任务：模拟盘推进 %d", len(points))
+        except TaskCancelled:
+            log.info("停机：模拟盘推进在检查点停止")
         except Exception:
             log.exception("模拟盘推进失败")
 

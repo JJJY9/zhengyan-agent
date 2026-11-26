@@ -43,6 +43,7 @@ def create_app(deps: Deps | None = None, checkpointer=None, auth: tuple[str, str
         scheduler = Scheduler(services, hours).start()
         yield
         scheduler.stop()
+        services.research.shutdown()          # 取消排队作业并把注定不执行的任务标取消
 
     app = FastAPI(title="股票投资顾问 Agent", version="0.4.0", lifespan=lifespan)
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

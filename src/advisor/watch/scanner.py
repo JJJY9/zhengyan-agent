@@ -215,7 +215,7 @@ class Watcher:
             raise WatchError("提醒不存在")
         if alert.status != "open":
             raise WatchError("只有待处理的提醒可以发起复核")
-        if not self.store.try_start_review(alert_id):        # 原子抢占：并发复核只允许一个真正发起
+        if not self.store.claim_review(alert_id):          # 原子领取：并发双击只有一个成功
             raise WatchError("提醒已被另一次复核操作接管")
         focus = [a.text for a in alert.affected][:8]
         changes = "；".join(e.title for e in alert.events)
@@ -224,13 +224,9 @@ class Watcher:
             task_id = service.start(ResearchRequest(question=question, ticker=alert.ticker, route="standard"),
                                     background=background, review_focus=focus)
         except Exception:
-            self.store.update_alert(alert_id, status="open")   # 起任务失败：把提醒放回待处理，允许重试
+            self.store.release_review(alert_id)             # 起任务失败：放回待处理，允许重试
             raise
-        try:
-            self.store.update_alert(alert_id, review_task_id=task_id)
-        except Exception:                       # 任务已启动但状态写入失败：放回待处理，sync 也会兜底
-            self.store.update_alert(alert_id, status="open", review_task_id=None,
-                                    note="复核已启动但状态写入失败，可重新发起复核")
+        self.store.finish_review(alert_id, task_id)         # 回填真实任务号（sync 看到 pending 占位不会重置）
         return task_id
 
     def dismiss(self, alert_id: str, note: str) -> None:
@@ -245,7 +241,16 @@ class Watcher:
         """复核任务结束后回写提醒状态；进程崩溃遗留的僵尸任务先标记失败，提醒随之解锁。"""
         self.deps.repo.recover_stale_tasks(RECOVER_AGE_S)
         for a in self.store.list_alerts(status="reviewing"):
-            task = self.deps.repo.get_task(a.review_task_id or "")
+            if a.review_task_id == "pending":   # 领取后正在创建任务：给 120s 宽限，超时才视为中断
+                try:
+                    started = datetime.fromisoformat(a.review_started_at or "")
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    started = None
+                if started and (datetime.now(timezone.utc) - started).total_seconds() < 120:
+                    continue
+            task = self.deps.repo.get_task(a.review_task_id or "") if a.review_task_id != "pending" else None
             if not task:                        # 任务缺失/编号没写上：放回待处理，避免永久卡死
                 self.store.update_alert(a.id, status="open", review_task_id=None,
                                         note="复核任务缺失或已清理，请重新发起复核")

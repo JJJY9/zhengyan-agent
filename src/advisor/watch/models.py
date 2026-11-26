@@ -44,6 +44,7 @@ class Alert(BaseModel):
     status: AlertStatus = "open"
     created_at: datetime
     review_task_id: str | None = None
+    review_started_at: str | None = None     # 领取复核的时刻（占位 pending 的新鲜度判定）
     resolved_version: int | None = None
     note: str = ""
 

@@ -175,7 +175,7 @@ def test_freshness_marks_scan_failure_unknown():
 def test_dismiss_rejects_non_open_alert(repo):
     store = WatchStore(repo.db)
     a = _alert(store, "fp_dismiss")
-    assert store.try_start_review(a.id)                    # status=reviewing
+    assert store.claim_review(a.id)                        # status=reviewing（pending 占位）
     watcher = Watcher(SimpleNamespace(repo=repo), store)
     with pytest.raises(WatchError, match="待处理"):
         watcher.dismiss(a.id, "不想看了")
@@ -185,12 +185,12 @@ def test_scheduler_syncs_and_recovers_missing_task(repo, policy):
     svcs = _services(repo, policy, FakeSource())
     store = svcs.watch.store
     done = _alert(store, "fp_done")
-    store.try_start_review(done.id)
+    store.claim_review(done.id)
     repo.create_task("t_done", {"question": "q"})
     repo.update_task("t_done", status="done", result={"dossier_key": CODE, "version": 2})
     store.update_alert(done.id, review_task_id="t_done")
     orphan = _alert(store, "fp_orphan")
-    store.try_start_review(orphan.id)
+    store.claim_review(orphan.id)
     store.update_alert(orphan.id, review_task_id="t_missing")
 
     Scheduler(svcs, 0).tick()                              # 定时任务本身就要回写，而不是等网页访问
