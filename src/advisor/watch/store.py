@@ -58,26 +58,38 @@ class WatchStore:
         doc = self.alerts.find_one({"id": alert_id}, projection={"_id": 0})
         return Alert.model_validate(doc) if doc else None
 
-    def claim_review(self, alert_id: str) -> bool:
-        """原子领取复核：状态、占位 task_id 与领取时间同一次写入。
+    def claim_review(self, alert_id: str, instance: str | None = None) -> bool:
+        """原子领取复核：状态、占位 task_id、领取时间与领取方租约同一次写入。
 
         分两步写（先置 reviewing 再回填 task_id）时，并发 sync 会把中间态当成「任务缺失」重置回 open，
-        复核完成后永远无法 resolve；占位 pending + 领取时间让 sync 能区分「正在创建」与「真的丢了」。"""
+        复核完成后永远无法 resolve；占位 pending + 领取时间让 sync 能区分「正在创建」与「真的丢了」，
+        领取方租约则让跨进程同步复核（可能远超 120s）不被误判。"""
+        fields = {"status": "reviewing", "review_task_id": "pending",
+                  "review_started_at": _now().isoformat()}
+        if instance:
+            fields["review_instance"] = instance
         doc = self.alerts.find_one_and_update(
             {"id": alert_id, "status": "open"},
-            {"$set": {"status": "reviewing", "review_task_id": "pending",
-                      "review_started_at": _now().isoformat()}},
+            {"$set": fields},
         )
         return doc is not None
 
     def finish_review(self, alert_id: str, task_id: str) -> None:
-        self.alerts.update_one({"id": alert_id, "review_task_id": "pending"},
-                               {"$set": {"review_task_id": task_id}, "$unset": {"review_started_at": ""}})
+        res = self.alerts.update_one({"id": alert_id, "review_task_id": "pending"},
+                                     {"$set": {"review_task_id": task_id},
+                                      "$unset": {"review_started_at": "", "review_instance": ""}})
+        if res.matched_count == 0:
+            # 占位在任务创建期间被 sync 误判重置回 open：任务已真实创建，把提醒接回复核中
+            # （已被忽略或被另一次领取的提醒不接回，避免把用户操作覆盖掉）
+            self.alerts.update_one({"id": alert_id, "review_task_id": None, "status": "open"},
+                                   {"$set": {"status": "reviewing", "review_task_id": task_id},
+                                    "$unset": {"review_instance": ""}})
 
     def release_review(self, alert_id: str) -> None:
         """起任务失败：把领取放回待处理，允许重试。"""
         self.alerts.update_one({"id": alert_id, "review_task_id": "pending"},
-                               {"$set": {"status": "open", "review_task_id": None}, "$unset": {"review_started_at": ""}})
+                               {"$set": {"status": "open", "review_task_id": None},
+                                "$unset": {"review_started_at": "", "review_instance": ""}})
 
     def list_alerts(self, ticker: str | None = None, status: str | None = None, limit: int = 100) -> list[Alert]:
         q = {k: v for k, v in (("ticker", ticker), ("status", status)) if v}

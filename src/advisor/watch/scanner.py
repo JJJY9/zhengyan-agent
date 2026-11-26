@@ -215,7 +215,9 @@ class Watcher:
             raise WatchError("提醒不存在")
         if alert.status != "open":
             raise WatchError("只有待处理的提醒可以发起复核")
-        if not self.store.claim_review(alert_id):          # 原子领取：并发双击只有一个成功
+        instance = (getattr(service, "instance", None)
+                    or getattr(getattr(service, "research", None), "instance", None))
+        if not self.store.claim_review(alert_id, instance=instance):   # 原子领取：并发双击只有一个成功
             raise WatchError("提醒已被另一次复核操作接管")
         focus = [a.text for a in alert.affected][:8]
         changes = "；".join(e.title for e in alert.events)
@@ -241,7 +243,9 @@ class Watcher:
         """复核任务结束后回写提醒状态；进程崩溃遗留的僵尸任务先标记失败，提醒随之解锁。"""
         self.deps.repo.recover_stale_tasks(RECOVER_AGE_S)
         for a in self.store.list_alerts(status="reviewing"):
-            if a.review_task_id == "pending":   # 领取后正在创建任务：给 120s 宽限，超时才视为中断
+            if a.review_task_id == "pending":   # 领取后正在创建任务：活租约不论多久都等，死租约给 120s 宽限
+                if a.review_instance and self.deps.repo.lease_alive(a.review_instance):
+                    continue                    # CLI 同步复核可能远超 120s：进程还在工作就不能重置
                 try:
                     started = datetime.fromisoformat(a.review_started_at or "")
                     if started.tzinfo is None:

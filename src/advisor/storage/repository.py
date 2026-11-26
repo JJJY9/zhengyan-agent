@@ -70,7 +70,9 @@ class Repository:
             existing = self.db.evidence.find_one({"id": card.id}, projection={"_id": 0})
             if existing is None:
                 return True
-            return not [k for k in new if k != "_id" and existing.get(k) != new.get(k)]   # 失败的插入会把 _id 注回字典
+            # 失败的插入会把 _id 注回字典；retrieved_at 每次取数都不同，不算元数据冲突
+            immutable = {k: v for k, v in new.items() if k not in ("_id", "retrieved_at")}
+            return not [k for k in immutable if existing.get(k) != immutable[k]]
 
     def get_evidence(self, ids: list[str]) -> list[EvidenceCard]:
         docs = self.db.evidence.find({"id": {"$in": ids}})

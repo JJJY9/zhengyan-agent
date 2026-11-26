@@ -431,13 +431,18 @@ class Nodes:
                                     + [x for r in (delib or {}).get("team", []) for x in r.get("lessons", [])])),
         )
         evidence = {c.id: c for c in _cards(state)}
+        prior_v = (state.get("prior") or {}).get("version")
         for attempt in range(3):
             # 同 key 并发提交会同时算出版本号与父版本：撞唯一索引后两者都要按当前库重算，
             # 否则重试后的新版本挂着旧 parent，版本链分叉、diff 基准错位
             new_parent = self.d.repo.latest_dossier_version_at(key, as_of)
             if new_parent != dossier.parent_version:
-                self._event(state, "commit",
-                            f"并发提交检测：上一版本由 v{dossier.parent_version} 变为 v{new_parent}，已按最新版本续链")
+                note = (f"并发提交：上一版本在本任务研究期间由 v{dossier.parent_version} 变为 v{new_parent}，"
+                        "已按最新版本续链")
+                if prior_v is not None and dossier.prior_review:
+                    note += f"；prior_review 对照仍基于研究开始时载入的 v{prior_v}"
+                self._event(state, "commit", note)
+                dossier = dossier.model_copy(update={"boundary_notes": [*dossier.boundary_notes, note]})
             dossier = dossier.model_copy(update={"version": (self.d.repo.latest_dossier_version(key) or 0) + 1,
                                                  "parent_version": new_parent})
             report = render_report(dossier, evidence, Budget.from_dict(state["budget"]))

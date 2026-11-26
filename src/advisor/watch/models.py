@@ -45,6 +45,7 @@ class Alert(BaseModel):
     created_at: datetime
     review_task_id: str | None = None
     review_started_at: str | None = None     # 领取复核的时刻（占位 pending 的新鲜度判定）
+    review_instance: str | None = None       # 领取方进程租约：活租约的 pending 占位不论多久都不能重置
     resolved_version: int | None = None
     note: str = ""
 

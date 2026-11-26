@@ -40,6 +40,7 @@ def test_commit_retry_recomputes_parent(repo, policy):
         repo.try_insert_dossier = real_try
     latest = repo.get_dossier(CODE)
     assert latest.version == 3 and latest.parent_version == 2     # 重试后必须挂到并发插入的 v2，而非旧 parent
+    assert any("由 v1 变为 v2" in n for n in latest.boundary_notes)   # 档案自述并发续链，对照基准可追溯
 
 
 def test_list_and_exports_follow_as_of_current(repo, policy):
