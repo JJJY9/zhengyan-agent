@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { StatusBadge } from "../components/Badge";
 import ExpertTeam from "../components/ExpertTeam";
@@ -16,12 +16,33 @@ const NAMES: Record<string, string> = {
 
 export default function TaskDetail() {
   const { id = "" } = useParams();
+  const nav = useNavigate();
   const [task, setTask] = useState<Task | null>(null);
   const [work, setWork] = useState<WorkingItem[]>([]);
   const [audit, setAudit] = useState<AuditRecord[] | null>(null);
   const [error, setError] = useState<{ msg: string; id: string } | null>(null);
   const [actionErr, setActionErr] = useState("");
+  const [retrying, setRetrying] = useState(false);
   const [tick, setTick] = useState(0);
+
+  // 失败/取消的任务按已保存的请求（脱敏后的原参数）重新发起一个新任务
+  const retry = async () => {
+    if (!task || retrying) return;
+    setRetrying(true);
+    setActionErr("");
+    try {
+      const { task_id } = await api.research({
+        question: task.request.question,
+        ticker: task.request.ticker ?? undefined,
+        as_of: task.request.as_of ?? undefined,
+        route: task.request.route,
+      });
+      nav(`/tasks/${task_id}`);
+    } catch (e) {
+      setActionErr((e as Error).message);
+      setRetrying(false);
+    }
+  };
   const taskRef = useRef<Task | null>(null);
 
   useEffect(() => {
@@ -128,6 +149,14 @@ export default function TaskDetail() {
       )}
       {task.error && (task.status === "failed" || task.status === "cancelled")
         && <div className="error">{task.error}</div>}
+      {(task.status === "failed" || task.status === "cancelled") && (
+        <div className="row-btns" style={{ margin: "8px 0" }}>
+          <button className="primary" disabled={retrying} onClick={retry}>
+            {retrying ? "正在发起…" : "按原参数重新发起"}
+          </button>
+          <span className="muted small">用已保存的请求（问题为脱敏后的文本）发起一个新任务</span>
+        </div>
+      )}
 
       {finalRouting && <RoutingCard r={finalRouting} />}
 
