@@ -24,7 +24,8 @@ class DeepNodes(Nodes):
         summary = "；".join(f"{t} {sum(c.source_type == t for c in cards)} 条"
                            for t in ("filing", "calc", "market", "announcement", "web"))
         unknowns = state.get("unknowns_sys", [])
-        plan = agent.plan_team(h, self.d, state["question"], f"{state.get('company_name')}（{state['ticker']}）",
+        safe_q = state.get("safe_question") or state["question"]
+        plan = agent.plan_team(h, self.d, safe_q, f"{state.get('company_name')}（{state['ticker']}）",
                                (state.get("routing") or {}).get("stakes"),
                                summary + (f"；缺口：{'；'.join(unknowns[:3])}" if unknowns else ""))
         self.d.repo.save_working(state["task_id"], "team", "plan", plan.model_dump(mode="json"))
@@ -74,7 +75,8 @@ class DeepNodes(Nodes):
             }
             sends.append(Send("expert_round", {
                 "task_id": state["task_id"], "route": state["route"], "as_of": state["as_of"], "ticker": state["ticker"],
-                "company": state.get("company_name", ""), "question": state["question"], "expert": key, "questions": qs,
+                "company": state.get("company_name", ""), "expert": key, "questions": qs,
+                "question": state.get("safe_question") or state["question"],
                 "shared": shared, "allocation": alloc, "started_at": budget.started_at, "paused_s": budget.paused_s,
                 "rsi_search": rsi_search, "rsi_lessons": rsi_lessons,   # 任务级 RSI 快照：专家不实时读在用版本
             }))
@@ -158,7 +160,8 @@ class DeepNodes(Nodes):
         as_of = date.fromisoformat(state["as_of"])
         plan = TeamPlan.model_validate(state["team"])
         try:
-            out, synth, rulings, adopted = agent.chair(h, self.d, state["question"], state.get("company_name", ""), results,
+            out, synth, rulings, adopted = agent.chair(h, self.d, state.get("safe_question") or state["question"],
+                                                       state.get("company_name", ""), results,
                                                        board, challenges, responses, evidence, state.get("prior"), as_of)
         except Exception as e:  # noqa: BLE001
             self._event(state, "chair", f"主席汇总失败：{e}")
