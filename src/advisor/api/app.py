@@ -57,6 +57,10 @@ def create_app(deps: Deps | None = None, checkpointer=None, auth: tuple[str, str
     for module in ROUTERS:
         app.include_router(module.router)
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str, jobs: Jobs):
+        return jobs.cancel(job_id)
+
     @app.get("/api/jobs/{job_id}")
     def job(job_id: str, jobs: Jobs):
         return jobs.get(job_id)

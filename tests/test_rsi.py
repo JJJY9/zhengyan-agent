@@ -228,10 +228,10 @@ def test_evaluate_discard_does_not_overwrite_manual_reject(rsi):
     import advisor.rsi.runner as runner_mod
     real = runner_mod.evaluate_s1
 
-    def slow_eval(deps, ledger, r, base, cand, log=lambda m: None):
+    def slow_eval(deps, ledger, r, base, cand, log=lambda m: None, is_cancelled=lambda: False):
         # 模拟评测耗时期间人工拒绝（直接改库，模拟请求线程的操作）
         ledger.db.rsi_runs.update_one({"run_id": r.run_id}, {"$set": {"status": "rejected"}})
-        return real(deps, ledger, r, base, cand, log)
+        return real(deps, ledger, r, base, cand, log, is_cancelled)
 
     import pytest as _pytest
     _pytest.MonkeyPatch().setattr(runner_mod, "evaluate_s1", slow_eval)

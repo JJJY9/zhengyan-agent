@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from advisor.contracts import Dossier, EvidenceCard, ResearchRequest
 from advisor.evidence import fact_value, metric_facts, report_periods
 from advisor.graph.deps import Deps
-from advisor.harness import Budget, BudgetExceeded, HarnessDenied, SkillFailed
+from advisor.harness import Budget, BudgetExceeded, HarnessDenied, SkillFailed, TaskCancelled
 from advisor.skills.compute.finance import normalize_period
 from advisor.watch.models import EVENT_LABEL, AffectedClaim, Alert, WatchEvent
 from advisor.watch.store import WatchStore
@@ -110,10 +110,13 @@ class Watcher:
                 self.store.update_alert(a.id, status="dismissed",
                                         note=f"已有更新的档案 v{d.version}（时点 {d.as_of}），旧提醒自动关闭")
 
-    def scan_all(self, today: date | None = None, log=lambda m: None) -> list[Alert]:
+    def scan_all(self, today: date | None = None, log=lambda m: None,
+                 is_cancelled=lambda: False) -> list[Alert]:
         self.sync()                             # 定时/CLI 扫描也回写复核结果（不再只在打开网页时同步）
         out = []
         for sub in self.store.list_subs():
+            if is_cancelled():                  # 取消检查点：每个订阅之间
+                raise TaskCancelled("扫描作业已取消")
             try:
                 alert = self.scan(sub.ticker, today)
             except WatchError as e:

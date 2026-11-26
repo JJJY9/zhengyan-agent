@@ -72,6 +72,7 @@ export const api = {
     job: (id: string) => req<RsiJob>(`/api/rsi/jobs/${id}`),
   },
   job: (id: string) => req<RsiJob>(`/api/jobs/${id}`),
+  jobCancel: (id: string) => req<{ ok: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   profile: {
     get: () => req<ProfileState>("/api/profile"),
     confirm: (body: { risk: RiskProfile; holdings: Holding[]; change_note: string; confirmed: boolean }) =>
