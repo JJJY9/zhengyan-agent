@@ -19,7 +19,7 @@ export default function Strategy() {
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const [form, setForm] = useState<null | { name: string; thesis: string; universe: string; entry: Rule[]; exit: Rule[];
-    max_positions: number; stop_loss_pct: number; max_drawdown_limit: number; change_reason: string }>(null);
+    max_positions: string; stop_loss_pct: string; max_drawdown_limit: string; change_reason: string }>(null);
   useAskContext({ title: "策略与模拟盘", suggestions: ["PE 分位低一定意味着便宜吗？还要核对哪些口径"] }, []);
 
   const load = useCallback(() => { api.strategy.overview().then(setOv).catch((e) => setError(e.message)); }, []);
@@ -40,15 +40,31 @@ export default function Strategy() {
     setError("");
     try {
       const { universe, ...rest } = form;
+      // 空串不能被 Number("") 当成 0 通过校验：编辑期保留字符串，提交前统一转换
+      const num = (s: string): number | null => {
+        const t = String(s).trim();
+        return t === "" || !Number.isFinite(Number(t)) ? null : Number(t);
+      };
+      const maxPos = num(rest.max_positions), stop = num(rest.stop_loss_pct), mdd = num(rest.max_drawdown_limit);
+      if (maxPos === null || !Number.isInteger(maxPos) || maxPos < 1 || maxPos > 20) {
+        setError("最多持有必须是 1–20 的整数"); setBusy(false); return;
+      }
+      if (stop === null || stop < 0 || stop > 100) {
+        setError("止损 % 必须是 0–100 的数字"); setBusy(false); return;
+      }
+      if (mdd === null || mdd <= 0 || mdd > 100) {
+        setError("晋级回撤上限 % 必须是 (0,100] 的数字"); setBusy(false); return;
+      }
       const cast = (rules: Rule[]): Rule[] => rules.map((r) => (r.field === "status" ? r : { ...r, value: Number(r.value) }));
       for (const r of [...rest.entry, ...rest.exit]) {
-        if (r.field !== "status" && !Number.isFinite(Number(r.value))) {
+        if (r.field !== "status" && (String(r.value).trim() === "" || !Number.isFinite(Number(r.value)))) {
           setError(`阈值必须是数字（${r.field} 当前为「${String(r.value)}」）`);
           setBusy(false);
           return;
         }
       }
-      const v = await api.strategy.create({ ...rest, entry: cast(rest.entry), exit: cast(rest.exit),
+      const v = await api.strategy.create({ ...rest, max_positions: maxPos, stop_loss_pct: stop, max_drawdown_limit: mdd,
+                                           entry: cast(rest.entry), exit: cast(rest.exit),
                                            universe: universe.split(/[,，\s]+/).filter(Boolean) });
       nav(`/strategy/${v.card_id}/${v.version}`);
     } catch (e) { setError((e as Error).message); setBusy(false); }
@@ -60,7 +76,7 @@ export default function Strategy() {
         right={<>
           <button disabled={busy} onClick={step}>{busy ? "推进中…" : "推进模拟盘到今天"}</button>
           <button className="primary" onClick={() => setForm({ name: "", thesis: "", universe: "", entry: DEFAULT_ENTRY, exit: DEFAULT_EXIT,
-            max_positions: 5, stop_loss_pct: 15, max_drawdown_limit: 20, change_reason: "" })}>新建策略卡</button>
+            max_positions: "5", stop_loss_pct: "15", max_drawdown_limit: "20", change_reason: "" })}>新建策略卡</button>
         </>} />
       <div className="page">
         {error && <div className="error">{error}</div>}
@@ -79,9 +95,9 @@ export default function Strategy() {
             <div><div className="muted small" style={{ marginBottom: 6 }}>移出条件（任一满足）</div>
               <RuleEditor rules={form.exit} fields={ov.fields} onChange={(exit) => setForm({ ...form, exit })} /></div>
             <div className="stat-row" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-              <label>最多持有<input type="number" min={1} max={20} value={form.max_positions} onChange={(e) => setForm({ ...form, max_positions: Number(e.target.value) })} /></label>
-              <label>止损 %<input type="number" value={form.stop_loss_pct} onChange={(e) => setForm({ ...form, stop_loss_pct: Number(e.target.value) })} /></label>
-              <label>晋级回撤上限 %<input type="number" value={form.max_drawdown_limit} onChange={(e) => setForm({ ...form, max_drawdown_limit: Number(e.target.value) })} /></label>
+              <label>最多持有<input type="number" min={1} max={20} value={form.max_positions} onChange={(e) => setForm({ ...form, max_positions: e.target.value })} /></label>
+              <label>止损 %<input type="number" value={form.stop_loss_pct} onChange={(e) => setForm({ ...form, stop_loss_pct: e.target.value })} /></label>
+              <label>晋级回撤上限 %<input type="number" value={form.max_drawdown_limit} onChange={(e) => setForm({ ...form, max_drawdown_limit: e.target.value })} /></label>
             </div>
             <label>改动理由（不少于 10 个字）<input value={form.change_reason} onChange={(e) => setForm({ ...form, change_reason: e.target.value })} /></label>
             <div className="row-btns" style={{ margin: 0 }}>
