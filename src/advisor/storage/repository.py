@@ -39,6 +39,8 @@ class Repository:
         self.db.cache.create_index("key", unique=True)
         self.db.cache.create_index("expires_at", expireAfterSeconds=0)            # 过期缓存自动清理，防止无限增长
         self.db.working_memory.create_index([("task_id", ASCENDING), ("created_at", ASCENDING)])
+        self.db.working_memory.create_index([("task_id", ASCENDING), ("kind", ASCENDING), ("key", ASCENDING)],
+                                            unique=True)
         self.db.working_memory.create_index("expires_at", expireAfterSeconds=0)   # 研究记忆到期自动清理
         self.db.eval_runs.create_index("run_id", unique=True)
         self.db.leases.create_index("instance", unique=True)
@@ -278,6 +280,10 @@ class Repository:
             {"$set": {"data": data, "created_at": _now(), "expires_at": _now() + timedelta(days=ttl_days)}},
             upsert=True,
         )
+
+    def get_working(self, task_id: str, kind: str, key: str) -> Any | None:
+        doc = self.db.working_memory.find_one({"task_id": task_id, "kind": kind, "key": key})
+        return doc.get("data") if doc else None
 
     def list_working(self, task_id: str) -> list[dict]:
         cur = self.db.working_memory.find({"task_id": task_id}, projection={"_id": 0}).sort("created_at", ASCENDING)
