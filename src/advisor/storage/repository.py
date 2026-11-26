@@ -290,6 +290,19 @@ class Repository:
     def list_evals(self, limit: int = 20) -> list[dict]:
         return list(self.db.eval_runs.find({}, projection={"_id": 0}).sort("created_at", DESCENDING).limit(limit))
 
+    def recover_stale_evals(self, max_age_s: float = 3600) -> int:
+        """服务重启后回收僵尸评测：running 且长时间无进展（进度每例刷新 updated_at）的标记失败。
+
+        评测没有实例租约：阈值按「单例研究最长时限 + 余量」取值，只在启动回收路径调用，
+        不会误杀正在跑的评测。"""
+        cutoff = _now() - timedelta(seconds=max_age_s)
+        res = self.db.eval_runs.update_many(
+            {"status": "running", "updated_at": {"$lt": cutoff}},
+            {"$set": {"status": "failed", "updated_at": _now(),
+                      "error": "进程重启或长时间无进展，评测中断；可重新发起"}},
+        )
+        return res.modified_count
+
     def get_eval(self, run_id: str) -> dict | None:
         return _clean(self.db.eval_runs.find_one({"run_id": run_id}))
 

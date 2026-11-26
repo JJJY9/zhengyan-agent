@@ -63,8 +63,9 @@ def overview(svc: Svc):
         counterfactual = {"run_id": s1.run_id, "metric": s1.eval.get("metric"),
                           "arms": {k: {"slices": v.get("slices"), "tokens": v.get("tokens"), "cards": v.get("cards"), "note": v.get("note")}
                                    for k, v in s1.eval["arms"].items()}}
+    from advisor.rsi.issues import USER_DOSSIER
     inherit = list(runner.deps.repo.db.dossiers.aggregate([
-        {"$match": {"rsi_versions": {"$exists": True, "$ne": {}}}},
+        {"$match": {**USER_DOSSIER, "rsi_versions": {"$exists": True, "$ne": {}}}},   # 评测档案不算真实研究
         {"$group": {"_id": "$rsi_versions", "n": {"$sum": 1}, "lessons_used": {"$addToSet": "$lessons_used"},
                     "last": {"$max": "$created_at"}}},
         {"$sort": {"last": -1}}, {"$limit": 10}]))

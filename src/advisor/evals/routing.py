@@ -43,17 +43,21 @@ def fit(rows: list[dict], abstain_below: float) -> dict:
 
 
 def run_routing_eval(deps, path=CASES, run_id: str | None = None) -> str:
-    cases = json.loads(path.read_text(encoding="utf-8"))["cases"]
     run_id = run_id or "rt_" + uuid.uuid4().hex[:8]
     repo = deps.repo
-    # 先登记 running：评测期间列表可见、前端能接上进度；任何异常落成 failed，不会静默消失
-    repo.save_eval({"run_id": run_id, "type": "routing", "status": "running",
-                    "created_at": datetime.now(timezone.utc)})
+    # 先登记 running：评测期间列表可见、前端能接上进度；任何异常落成 failed，不会静默消失。
+    # 金标文件读取也放进 try：读失败同样要落 failed，不能把 running 挂着（后台异常会被线程池吞掉）
+    running_doc = {"run_id": run_id, "type": "routing", "status": "running",
+                   "created_at": datetime.now(timezone.utc)}
+    repo.save_eval(running_doc)
     try:
+        cases = json.loads(path.read_text(encoding="utf-8"))["cases"]
         # 评测线上实际在用的参数：policies.yaml 叠加 RSI 账本里已发布的路由参数（S2）
         cfg = deps.rsi.routing(deps.policy.routing) if deps.rsi else dict(deps.policy.routing)
         rows = []
         for i, case in enumerate(cases):
+            if i and i % 5 == 0:                 # 周期性刷新 updated_at：僵尸回收按停滞时长判定
+                repo.save_eval(running_doc)
             h = deps.harness(f"eval-{run_id}", "quick", date.today(), Budget(limits={"tokens": 20000, "wall_clock_s": 120}),
                              node="route_eval", principal="evaluator")
             d = decide_route(h, case["question"], case.get("intent", "research"), "auto", cfg)
