@@ -44,4 +44,7 @@ FROM app AS test
 COPY requirements-dev.txt ./
 RUN pip install -r requirements-dev.txt
 COPY tests ./tests
+# 测试直接读取这两个仓库文件（配置校验/部署一致性用例）：镜像里必须与仓库树一致
+COPY deploy/mongo-init/01-restore-demo.sh ./deploy/mongo-init/
+COPY docker-compose.yml ./
 CMD ["python", "-m", "pytest", "-q"]

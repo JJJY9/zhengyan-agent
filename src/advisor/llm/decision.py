@@ -3,6 +3,7 @@
 只做"选一个标签"：给一段文本和若干单选题，返回每题的概率分布。不生成文字，结果不进入结论或证据。
 """
 import math
+import re
 from typing import Any
 
 import httpx
@@ -45,6 +46,8 @@ class DecisionClient:
         except DecisionError:
             raise
         except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
-            raise DecisionError(f"决策模型不可用：{str(e)[:120]}") from e
+            # 异常串会进入任务事件/审计/导出：嵌入在 URL 里的 Basic 凭据必须先抹掉
+            msg = re.sub(r"//[^/@\s]*@", "//[已脱敏]@", str(e))[:120]
+            raise DecisionError(f"决策模型不可用：{msg}") from e
         meta = {"model": data.get("model", self.model), "latency_ms": data.get("latency_ms")}
         return answers, meta

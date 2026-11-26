@@ -44,7 +44,6 @@ experts:
   max_team: 5                # 不含反证官与主席
   search_per_expert: 2
   fetch_per_expert: 2
-  debate_rounds: 1
   max_challenges: 8
   # 模型轴：深研中每个角色的模型角色（classify/draft/reason）
   roles:

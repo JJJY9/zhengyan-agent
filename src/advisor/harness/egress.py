@@ -67,12 +67,24 @@ class EgressGuard:
         只替换片段会原样出域。逐行处理：命中行归一化后整体遮蔽，其他行原样保留
         （归一化会合并日期里的连字符，绝不能套用到证据区）。
         """
-        out = []
         lines = (text or "").splitlines() or [""]
-        for line in lines:
-            norm = _normalize(line)
+        norm_lines = [_normalize(line) for line in lines]
+        # 模式可能跨行命中（「我持有 + 换行 + 成本 120 元」）：跨行命中时被跨过的行也要整体遮蔽数字，
+        # 否则 consent 说好的脱敏会在第二行漏出金额
+        offsets, pos = [], 0
+        for nl in norm_lines:
+            offsets.append((pos, pos + len(nl)))
+            pos += len(nl) + 1
+        hit = set()
+        for start, end in self._spans("\n".join(norm_lines)):
+            for i, (a, b) in enumerate(offsets):
+                if start <= b and end >= a:
+                    hit.add(i)
+        out = []
+        for i, line in enumerate(lines):
+            norm = norm_lines[i]
             spans = self._spans(norm)
-            if not spans:
+            if not spans and i not in hit:
                 out.append(line)
                 continue
             for start, end in reversed(spans):

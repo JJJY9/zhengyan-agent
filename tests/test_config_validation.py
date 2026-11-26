@@ -20,7 +20,7 @@ def _doc(**over) -> dict:
 
 def _load(tmp_path, doc: dict) -> Policy:
     (tmp_path / "policies.yaml").write_text(yaml.safe_dump(doc, allow_unicode=True), encoding="utf-8")
-    (tmp_path / "sites.yaml").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "sites.yaml").write_text("fetch_allow: [example.com]\nblock: []\n", encoding="utf-8")
     return Policy.load(tmp_path)
 
 

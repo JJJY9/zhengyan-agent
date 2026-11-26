@@ -47,15 +47,32 @@ class Policy:
         self.strategy = raw.get("strategy", {})
         self.fetch_allow = tuple(sites.get("fetch_allow", []))
         self.block_sites = tuple(sites.get("block", []))
+        self._sites_raw = dict(sites)
 
     @classmethod
     def load(cls, config_dir: Path | None = None) -> "Policy":
         policy = cls(load_yaml("policies.yaml", config_dir), load_yaml("sites.yaml", config_dir))
-        policy.validate()
+        roles: set[str] | None = None
+        try:
+            models = load_yaml("models.yaml", config_dir)
+            if isinstance(models, dict) and isinstance(models.get("roles"), dict):
+                roles = set(models["roles"])
+        except FileNotFoundError:
+            pass                       # 合成配置（测试/嵌入）可以只给 policies+sites
+        policy.validate(roles)
         return policy
 
-    def validate(self) -> None:
-        """配置缺段/拼错必须启动即失败：egress 脱敏静默失效比拒绝启动危险得多。"""
+    def validate(self, models_roles: set[str] | None = None) -> None:
+        """配置缺段/拼错必须启动即失败：egress 脱敏或抓取白名单静默失效比拒绝启动危险得多。"""
+        unknown_sites = sorted(set(self._sites_raw) - {"fetch_allow", "block"})
+        if unknown_sites:
+            raise ValueError(f"sites.yaml 含未知键：{unknown_sites}（只允许 fetch_allow / block）")
+        allow = self._sites_raw.get("fetch_allow")
+        if not isinstance(allow, list) or not allow or not all(isinstance(s, str) and s.strip() for s in allow):
+            raise ValueError("sites.yaml fetch_allow 缺失或含非字符串：抓取白名单会静默失效，拒绝启动")
+        block = self._sites_raw.get("block")
+        if block is not None and (not isinstance(block, list) or not all(isinstance(s, str) for s in block)):
+            raise ValueError("sites.yaml block 必须是字符串列表")
         missing = [name for name in ("quick", "standard", "deep", "mcp") if name not in self.routes]
         if missing:
             raise ValueError(f"policies.yaml 缺少必需流程：{missing}")
@@ -79,6 +96,17 @@ class Policy:
                 re.compile(pattern)
             except (TypeError, re.error) as e:
                 raise ValueError(f"egress 正则无效：{pattern!r}（{e}）") from e
+        if models_roles:
+            bad_roles: dict[str, str] = {}
+            for name, rp in self.routes.items():
+                if rp.llm_role not in models_roles:
+                    bad_roles[f"routes.{name}.llm_role"] = rp.llm_role
+            for key, role in (self.experts.get("roles") or {}).items():
+                if role not in models_roles:
+                    bad_roles[f"experts.roles.{key}"] = role
+            if bad_roles:
+                raise ValueError(f"models.yaml 未定义这些角色：{bad_roles}（已定义：{sorted(models_roles)}）"
+                                 "——角色名拼错会在首个研究任务时才 KeyError，启动即拒绝加载")
 
     def route(self, name: str) -> RoutePolicy:
         if name not in self.routes:

@@ -1,4 +1,5 @@
 # 一键启动（Windows / macOS / Linux 通用，需要 Docker Desktop 或 Docker Engine + Compose v2）：
+# 需要先创建 .env（cp .env.example .env）；env_file 用字符串数组写法，任意 v2 版本都能解析。
 #   cp .env.example .env        # Windows PowerShell：Copy-Item .env.example .env
 #   docker compose up -d --build
 #   打开 http://localhost:8000
@@ -18,7 +19,9 @@ services:
       - advisor-mongo-data:/data/db
       - ./deploy/mongo-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      # 只认正式实例（PID 1 = mongod）：初始化脚本期间 entrypoint 起的临时 mongod 也会应答 ping，
+      # 不能让它把服务提前标成 healthy，否则演示数据还没导入完 app 就启动了
+      test: ["CMD-SHELL", 'mongosh --quiet --eval "db.adminCommand({ping:1}).ok" >/dev/null && [ "$(cat /proc/1/comm)" = mongod ]']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -33,9 +36,7 @@ services:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
     image: advisor-app:latest
     container_name: advisor-app
-    env_file:
-      - path: .env
-        required: false
+    env_file: [.env]
     environment:
       MONGO_URI: mongodb://mongo:27017          # 容器内通过服务名访问 mongo，覆盖 .env 里的 localhost
       # 经反向代理暴露时设为反向代理的容器地址（如 172.18.0.1），让登录限速按真实客户端 IP 计数
