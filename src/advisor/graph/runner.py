@@ -101,7 +101,7 @@ class ResearchService:
             task_id = "t_" + uuid.uuid4().hex[:10]
             # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
             request_doc = req.model_dump(mode="json")
-            request_doc["question"] = self.guard.redact(req.question)
+            request_doc["question"] = self.guard.redact_question(req.question)
             self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}),
                                        instance=self.instance)
             payload = {

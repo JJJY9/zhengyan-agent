@@ -130,7 +130,7 @@ class Nodes:
         if out is None:
             # 入口识别需要保留公司名：用与 find_sensitive 同口径的整块脱敏（跨行拆分的手机号/卡号
             # 也会被合并命中并遮蔽）；股票代码已在上方从原文本地解析，不依赖模型看见原始数字。
-            masked = self.guard.redact(q)
+            masked = self.guard.redact_question(q)
             try:
                 out = h.llm("classify", INTAKE_SYSTEM, masked, IntakeOut, purpose="intake")
             except TaskCancelled:
@@ -152,7 +152,7 @@ class Nodes:
             "ticker": code, "company_name": out.company_name or "", "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
             # 预脱敏问题：后续所有提示词拼装都用它，证据区数字因此不会被问题区的命中波及
-            "safe_question": self.guard.redact(q),
+            "safe_question": self.guard.redact_question(q),
         }
         if not explicit and code:
             # 回写识别出的股票代码：失败/取消后的「按原参数重试」不再依赖问题文本里仍带代码
@@ -423,7 +423,7 @@ class Nodes:
         status = "committed" if quality.decision == "pass" and not boundary else "partial"
         dossier = Dossier(
             key=key, version=0, parent_version=parent, ticker=state["ticker"],
-            name=state.get("company_name", ""), as_of=as_of, question=self.guard.redact(state["question"]),
+            name=state.get("company_name", ""), as_of=as_of, question=self.guard.redact_question(state["question"]),
             route=state["route"], status=status, summary=draft.get("summary", ""), claims=claims,
             unknowns=list(dict.fromkeys(draft.get("unknowns", []) + state.get("unknowns_sys", []))),
             dissents=draft.get("dissents", []), review_triggers=draft.get("review_triggers", []),
