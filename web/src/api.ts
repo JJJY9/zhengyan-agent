@@ -5,7 +5,18 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 401 && path !== "/api/login") toLogin();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+    const detail = (body as { detail?: unknown }).detail;
+    // 422 的 detail 是字段错误数组：拼出「字段：原因」，不要只给一句 HTTP 422
+    const msg = typeof detail === "string" ? detail
+      : Array.isArray(detail)
+        ? detail.map((d) => {
+          const loc = Array.isArray((d as { loc?: unknown[] }).loc) ? (d as { loc: unknown[] }).loc.slice(1).join(".") : "";
+          return `${loc ? loc + "：" : ""}${(d as { msg?: string }).msg ?? ""}`;
+        }).join("；")
+        : `HTTP ${res.status}`;
+    const err = new Error(msg || `HTTP ${res.status}`) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }

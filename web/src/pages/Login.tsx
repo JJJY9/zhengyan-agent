@@ -10,7 +10,11 @@ function nextPath() {
   try {
     const url = new URL(n, location.origin);
     if (url.origin !== location.origin || url.pathname === "/login") return "/workspace";
-    return url.pathname + url.search + url.hash;
+    // 点段归一化可能把 "/.//evil.example" 变成 "//evil.example"（协议相对、跨源）：
+    // 对最终要交给 location.assign 的字符串再解析一次，仍须同源
+    const target = url.pathname + url.search + url.hash;
+    if (target.startsWith("//") || new URL(target, location.origin).origin !== location.origin) return "/workspace";
+    return target;
   } catch {
     return "/workspace";
   }

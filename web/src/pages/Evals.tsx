@@ -35,8 +35,10 @@ export default function Evals() {
         if (!alive) return;
         setRun(r);
         if (r.status === "running") timer = window.setTimeout(load, 4000);
-      } catch {
-        if (alive) timer = window.setTimeout(load, 4000);   // 轮询失败稍后重试，不静默终止
+      } catch (e) {
+        if (!alive) return;
+        setMsg(`评测详情加载失败：${(e as Error).message}`);
+        if ((e as Error & { status?: number }).status !== 404) timer = window.setTimeout(load, 4000);   // 404 停止轮询
       }
     };
     load();
@@ -54,6 +56,7 @@ export default function Evals() {
     if (!confirm("对照评测会对每个用例分别跑标准研究与争议深研（约 10-20 分钟，消耗 DeepSeek 额度）。继续？")) return;
     try {
       const { run_id } = await api.startCompare({ routes: ["standard", "deep"] });
+      api.evals().then(setRuns).catch(() => undefined);
       nav(`/evals/${run_id}`);
     } catch (e) {
       setMsg((e as Error).message);
@@ -100,10 +103,13 @@ export default function Evals() {
           {runs.map((r) => (
             <Link key={r.run_id} to={`/evals/${r.run_id}`} className={`list-item ${r.run_id === id ? "current" : ""}`}>
               <span className="tag">{({ compare: "对照评测", routing: "路由校准", update: "持续更新" } as Record<string, string>)[r.type]}</span>
-              <StatusBadge status={r.status === "running" ? "running" : "done"} />
+              <StatusBadge status={r.status} />
               <span className="grow">
-                {r.type === "compare" ? (r.summary?.verdict.text ?? "运行中") : r.type === "update" ? updateLine(r) :
-                  `准确率 ${(r.accuracy ?? 0) * 100}% · 深研召回 ${((r.deep_recall ?? 0) * 100).toFixed(0)}% · 建议温度 ${r.calibration?.best_temperature ?? "—"}`}
+                {r.status === "failed" ? `失败：${r.error ?? "评测未完成"}` :
+                  r.type === "compare" ? (r.status === "running" ? "评测进行中…" : (r.summary?.verdict.text ?? "—")) :
+                  r.type === "update" ? updateLine(r) :
+                    r.status === "running" ? "评测进行中…" :
+                      `准确率 ${r.accuracy == null ? "—" : `${Math.round(r.accuracy * 100)}%`} · 深研召回 ${pct(r.deep_recall)} · 建议温度 ${r.calibration?.best_temperature ?? "—"}`}
               </span>
               <span className="muted small">{fmtTime(r.created_at)}</span>
             </Link>
@@ -120,6 +126,18 @@ function CompareView({ run }: { run: EvalRun }) {
   const v = s?.verdict;
   return (
     <div>
+      {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
+      {v && v.decision === "insufficient" && (
+        <div className="card warnbox">
+          <div>
+            <h3>{v.text}</h3>
+            <div className="small">
+              {v.failed_cases != null && <>失败用例 <b>{v.failed_cases}</b> 个；</>}
+              下方均值只统计成功用例（幸存者偏差），评测不完整时不能据此判定不退化
+            </div>
+          </div>
+        </div>
+      )}
       {v && v.decision !== "insufficient" && (
         <div className={`card ${v.decision === "adopt_multi_expert" ? "success" : "warnbox"}`}>
           <div>
@@ -222,13 +240,20 @@ function UpdateView({ run }: { run: EvalRun }) {
 function RoutingView({ run }: { run: EvalRun }) {
   const labels = ["quick", "standard", "deep"];
   const cal = run.calibration;
+  if (run.status === "running") {
+    return (
+      <div className="card">
+        <p className="muted"><span className="spinner inline" /> 评测进行中：指标与混淆矩阵在全部用例跑完后一次性给出</p>
+      </div>
+    );
+  }
   return (
     <div>
       {run.status === "failed" && <div className="error">{run.error ?? "评测失败"}</div>}
       <div className="stat-row">
-        <div className="card stat"><div className="muted small">准确率</div><b>{((run.accuracy ?? 0) * 100).toFixed(0)}%</b></div>
-        <div className="card stat"><div className="muted small">深研召回</div><b>{((run.deep_recall ?? 0) * 100).toFixed(0)}%</b></div>
-        <div className="card stat"><div className="muted small">拒判率</div><b>{((run.abstain_rate ?? 0) * 100).toFixed(0)}%</b></div>
+        <div className="card stat"><div className="muted small">准确率</div><b>{pct(run.accuracy) || "—"}</b></div>
+        <div className="card stat"><div className="muted small">深研召回</div><b>{pct(run.deep_recall)}</b></div>
+        <div className="card stat"><div className="muted small">拒判率</div><b>{pct(run.abstain_rate)}</b></div>
         <div className="card stat"><div className="muted small">建议温度</div><b>{cal?.best_temperature ?? "—"}</b>
           <div className="muted small">当前 {run.current?.temperature}</div></div>
       </div>
@@ -239,7 +264,7 @@ function RoutingView({ run }: { run: EvalRun }) {
             <thead><tr><th></th>{labels.map((l) => <th key={l} className="num">{ROUTE_LABEL[l]}</th>)}</tr></thead>
             <tbody>{labels.map((a) => (
               <tr key={a}><td>{ROUTE_LABEL[a]}</td>{labels.map((b) => (
-                <td key={b} className={`num ${a === b ? "diag" : ""}`}>{run.confusion?.[a]?.[b] ?? 0}</td>))}</tr>
+                <td key={b} className={`num ${a === b ? "diag" : ""}`}>{run.confusion?.[a]?.[b] ?? "—"}</td>))}</tr>
             ))}</tbody>
           </table>
         </div>
