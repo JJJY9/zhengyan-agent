@@ -1,6 +1,7 @@
 """后台定时：按间隔扫描已订阅的股票、把模拟盘推进到今天。没有变化不产生提醒。"""
 import logging
 import threading
+import time
 
 from advisor.harness import TaskCancelled
 from advisor.services import Services
@@ -9,6 +10,8 @@ log = logging.getLogger("advisor.scheduler")
 
 
 class Scheduler:
+    FAST_TICK_S = 60          # 分钟级轻量回收：僵尸任务/评测不依赖 6h 扫描节奏
+
     def __init__(self, services: Services, interval_hours: float):
         self.services = services
         self.interval_s = interval_hours * 3600
@@ -47,8 +50,20 @@ class Scheduler:
             log.exception("模拟盘推进失败")
 
     def _loop(self) -> None:
-        while not self._stop.wait(self.interval_s):
+        next_scan = time.monotonic() + self.interval_s
+        while True:
+            wait = min(self.FAST_TICK_S, max(next_scan - time.monotonic(), 0.0))
+            if self._stop.wait(wait):
+                return
             try:
-                self.tick()
-            except Exception:       # 定时任务失败不影响服务
-                log.exception("定时任务失败")
+                repo = self.services.deps.repo     # 回收是尽力而为：拿不到仓库也不能拖死定时线程
+                repo.recover_stale_tasks(1800)      # 属主已死的任务最迟一个租约周期内回收
+                repo.recover_stale_evals()
+            except Exception:      # noqa: BLE001
+                log.exception("僵尸回收失败")
+            if time.monotonic() >= next_scan:
+                try:
+                    self.tick()
+                except Exception:       # 定时任务失败不影响服务
+                    log.exception("定时任务失败")
+                next_scan = time.monotonic() + self.interval_s
