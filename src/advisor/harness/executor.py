@@ -305,7 +305,8 @@ class Harness:
             try:
                 self.check_cancelled()
                 self.budget.check()                 # 已超总时限的任务不再发起外部请求
-                answers, meta = self.decision_client.choose(self.egress.redact(state), questions)
+                # 决策模型只看选题意图，不需要公司名：严格模式整段替换个人描述
+                answers, meta = self.decision_client.choose(self.egress.redact(state, keep_names=False), questions)
                 record.update(status="ok", tokens=0, model=meta.get("model"))
                 return answers
             except Exception as e:

@@ -34,14 +34,23 @@ def test_split_numbers_are_masked(policy, text, parts):
         assert p not in red, red
 
 
-def test_blank_line_barrier_protects_evidence(policy):
-    """空行是硬屏障：问题区的个人命中不能把后面证据区的数字/日期一起遮蔽。"""
+def test_cross_blank_personal_description_masked(policy):
+    """跨空行的个人描述与 find_sensitive 同口径命中：两块的数字都要遮蔽，不能只遮第一块。"""
     guard = _guard(policy)
-    text = "我持有600519\n\n证据：营收910元，报告期 2026-09-30"
+    text = "我持有600519 1000股\n\n成本1500元，该怎么办"
     assert guard.find_sensitive(text)
     red = guard.redact(text)
-    assert "600519" not in red
-    assert "910" in red and "2026-09-30" in red
+    assert "600519" not in red and "1000" not in red and "1500" not in red
+
+
+def test_cross_blank_split_numbers_masked(policy):
+    """空行拆分的手机号/卡号同样按整段归一化命中并遮蔽。"""
+    guard = _guard(policy)
+    for text in ("我的手机号 1381234\n\n5678 请联系我",
+                 "我的卡号 622202020000\n\n123456789012"):
+        assert guard.find_sensitive(text)
+        red = guard.redact(text)
+        assert guard.find_sensitive(red) == []
 
 
 def test_intake_prompt_has_no_split_phone(repo, policy):

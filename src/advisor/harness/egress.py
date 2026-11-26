@@ -14,6 +14,11 @@ _FORMAT_CHARS = dict.fromkeys(map(ord, "​‌‍‎‏‪‫‬‭‮"
 _FULLWIDTH = str.maketrans("０１２３４５６７８９＋", "0123456789+")
 _SEP_BETWEEN_DIGITS = re.compile(r"(?<=\d)[\s\-–—－]+(?=\d)")
 _DIGITS = re.compile(r"\d+(?:\.\d+)?")
+# 跨行分隔只在「两侧都是完整日期」时不合并：证据摘录里相邻日期行不能被拼成假银行卡号
+_DATE_TAIL = re.compile(r"\d{4}[-–—－/.]\d{1,2}[-–—－/.]\d{1,2}\s*$")
+_DATE_HEAD = re.compile(r"^\s*\d{4}[-–—－/.]\d{1,2}[-–—－/.]\d{1,2}(?!\d)")
+_SECRET_HINT = re.compile(r"(?i)sk-|bearer|akia|xox|@")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _normalize(text: str) -> str:
@@ -36,9 +41,48 @@ class EgressGuard:
                 merged.append([start, end])
         return merged
 
+    def _scan(self, text: str) -> tuple[str, list[int], list[int]]:
+        """整段归一化（与 find_sensitive 同口径），返回 (归一化串, 归一化索引→原字符索引, 原字符索引→行号)。
+
+        数字之间的空白/连字符/换行都合并（拆行号码按整段才算命中）；但两侧都是完整日期时不合并。
+        """
+        text = text or ""
+        line_of: list[int] = []
+        for li, part in enumerate(text.split("\n")):
+            line_of.extend([li] * len(part))
+            line_of.append(li)
+        line_of = line_of[:len(text)]
+        norm_chars: list[str] = []
+        norm_orig: list[int] = []
+        j, n = 0, len(text)
+        prev_digit = False
+        sep_chars = "-–—－"
+        while j < n:
+            ch = text[j]
+            if ord(ch) in _FORMAT_CHARS:
+                j += 1
+                continue
+            t = ch.translate(_FULLWIDTH)
+            if prev_digit and (t in sep_chars or t.isspace()):
+                k = j + 1
+                while k < n and (text[k] in sep_chars or text[k].isspace()
+                                 or ord(text[k]) in _FORMAT_CHARS):
+                    k += 1
+                if k < n and text[k].translate(_FULLWIDTH).isdigit():
+                    bridge_dates = ("\n" in text[j:k]
+                                    and _DATE_TAIL.search(text[:j]) and _DATE_HEAD.match(text[k:]))
+                    if not bridge_dates:
+                        j = k                       # 数字间分隔（含换行）整体合并
+                        continue
+            norm_chars.append(t)
+            norm_orig.append(j)
+            prev_digit = t.isdigit()
+            j += 1
+        return "".join(norm_chars), norm_orig, line_of
+
     def find_sensitive(self, text: str) -> list[str]:
-        t = _normalize(text)
-        return [m.group(0) for p in self._sensitive for m in p.finditer(t)]
+        norm, _, _ = self._scan(text)
+        return [norm[s:e] for s, e in self._spans(norm)]
 
     def has_trade_intent(self, text: str) -> bool:
         t = _normalize(text)
@@ -60,66 +104,51 @@ class EgressGuard:
         if self.find_sensitive(text):
             raise HarnessDenied("出域内容含个人敏感信息，已阻断")
 
-    def redact(self, text: str) -> str:
-        """命中个人敏感信息时，把命中覆盖到的行的数字整体遮蔽。
+    def redact(self, text: str, keep_names: bool = True) -> str:
+        """命中个人敏感信息时，把命中覆盖到的行上的数字整体遮蔽；凭据形状的片段整段替换。
 
-        consent 承诺「这些信息会被脱敏」：同一条个人描述里的成本、股数、账号常常落在正则命中片段之外，
-        只替换片段会原样出域。定位必须与 find_sensitive 完全同口径：按「空行分块」，块内对整段做
-        归一化（数字之间的空白/连字符、包括换行都会被合并——手机号「1381234\n5678」按整段才算命中），
-        命中 span 覆盖到哪几行就整体遮蔽哪几行的数字；空行是硬屏障，问题区与证据区不会互相桥接。
+        定位与 find_sensitive 完全同一套整段归一化（数字间空白/连字符/换行合并，拆行号码按整段命中），
+        杜绝「检测到了但脱敏没覆盖」的口径分裂。遮蔽粒度：
+        - span 覆盖到的行里有数字的，整行数字替换为 [已脱敏]（成本/股数/账号同属个人财务信息）；
+        - span 文本是凭据形状（邮箱/sk-/Bearer/AKIA/无中文的字母数字串）时整段替换，避免邮箱等无数字泄露；
+        - 含中文的描述（如「我有贵州茅台1000股」）保留文字只抹数字，入口识别仍能读到公司名。
+        相邻日期行不会被拼成假号码；证据区只有在与个人描述真正连成一个命中时才受影响——提示词拼装
+        一律使用预脱敏的问题文本，证据数字不受问题区影响。
         """
-        lines = (text or "").splitlines() or [""]
-        out = list(lines)
-        blocks: list[list[int]] = []
-        cur: list[int] = []
-        for i, line in enumerate(lines):
-            if not line.strip():
-                if cur:
-                    blocks.append(cur)
-                    cur = []
-                continue
-            cur.append(i)
-        if cur:
-            blocks.append(cur)
-        sep_chars = set("-–—－")
-        for idxs in blocks:
-            group = [lines[i] for i in idxs]
-            joined = "\n".join(group)
-            line_of: list[int] = []
-            for li, part in enumerate(group):
-                line_of.extend([li] * len(part))
-                if li < len(group) - 1:
-                    line_of.append(li)          # 换行符归属上一行
-            norm_chars: list[str] = []
-            norm_line: list[int] = []
-            j, n = 0, len(joined)
-            prev_digit = False
-            while j < n:
-                ch = joined[j]
-                if ord(ch) in _FORMAT_CHARS:
-                    j += 1                      # 零宽等格式字符不参与归一化
+        text = text or ""
+        norm, norm_orig, line_of = self._scan(text)
+        drop: dict[int, int] = {}                 # 原字符索引 → 替换段起点（起点插占位符）
+        hit_lines: set[int] = set()
+        for start, end in self._spans(norm):
+            chunk = norm[start:end]
+            secret_like = (_SECRET_HINT.search(chunk)
+                           or (re.search(r"[A-Za-z]", chunk) and not _CJK.search(chunk)))
+            if secret_like or not keep_names:
+                origs = norm_orig[start:end]
+                if origs:
+                    head = min(origs)
+                    for o in origs:
+                        drop[o] = head                 # 凭据/严格模式：整段替换为占位符
+            for k in range(start, min(end, len(norm))):
+                if norm[k].isdigit():
+                    hit_lines.add(line_of[norm_orig[k]])
+        if not drop and not hit_lines:
+            return text
+        out_lines = []
+        for li, line in enumerate(text.split("\n")):
+            if li in hit_lines or any(0 <= o < len(text) and line_of[o] == li for o in drop):
+                out_lines.append(_DIGITS.sub("[已脱敏]", line))
+            else:
+                out_lines.append(line)
+        if drop:
+            rebuilt_chars: list[str] = []
+            for o, ch in enumerate(text):
+                if o in drop:
+                    if o == drop[o] and ch != "\n":
+                        rebuilt_chars.append("[已脱敏]")
                     continue
-                t = ch.translate(_FULLWIDTH)
-                if prev_digit and (t in sep_chars or t.isspace()):
-                    k = j + 1
-                    while k < n and (joined[k] in sep_chars or joined[k].isspace()
-                                     or ord(joined[k]) in _FORMAT_CHARS):
-                        k += 1
-                    if k < n and joined[k].translate(_FULLWIDTH).isdigit():
-                        j = k                       # 数字之间的分隔（含换行）整体合并
-                        continue
-                norm_chars.append(t)
-                norm_line.append(line_of[j])
-                prev_digit = t.isdigit()
-                j += 1
-            norm = "".join(norm_chars)
-            hit = set()
-            for start, end in self._spans(norm):
-                for k in range(start, min(end, len(norm_line))):
-                    hit.add(norm_line[k])
-            for li in hit:
-                gline = _normalize(group[li])
-                for start, end in reversed(self._spans(gline)):
-                    gline = gline[:start] + "[已脱敏]" + gline[end:]
-                out[idxs[li]] = _DIGITS.sub("[已脱敏]", gline)
-        return "\n".join(out)
+                rebuilt_chars.append(ch)
+            out_lines = []
+            for li, line in enumerate("".join(rebuilt_chars).split("\n")):
+                out_lines.append(_DIGITS.sub("[已脱敏]", line) if li in hit_lines else line)
+        return "\n".join(out_lines)

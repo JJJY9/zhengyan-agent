@@ -151,6 +151,8 @@ class Nodes:
         upd = {
             "ticker": code, "company_name": out.company_name or "", "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
+            # 预脱敏问题：后续所有提示词拼装都用它，证据区数字因此不会被问题区的命中波及
+            "safe_question": self.guard.redact(q),
         }
         if not explicit and code:
             # 回写识别出的股票代码：失败/取消后的「按原参数重试」不再依赖问题文本里仍带代码
@@ -202,7 +204,7 @@ class Nodes:
         # 任务开始时一次性取 RSI 各组件快照：路由参数、经验卡、检索模板此后都只读快照
         snap = self.d.rsi.snapshot() if self.d.rsi else {}
         cfg = {**self.d.policy.routing, **snap.get("routing", {}).get("content", {})} if snap else self.d.policy.routing
-        decision = decide_route(h, state["question"], state.get("intent", "research"),
+        decision = decide_route(h, state.get("safe_question") or state["question"], state.get("intent", "research"),
                                 state.get("route_requested", "auto"), cfg)
         rp = self.d.policy.route(decision.route)
         budget = Budget(limits=rp.budget, used=budget.used, started_at=budget.started_at, paused_s=budget.paused_s)
@@ -325,11 +327,12 @@ class Nodes:
         context = (statements + _cards(state, state.get("calc_ids", [])) + _cards(state, state.get("market_ids", []))
                    + _cards(state, state.get("announcement_ids", []))[:15] + web)
         role = self.d.policy.route(state["route"]).llm_role
-        lessons = self._lessons(state, lesson_query(state["question"], context))
+        safe_q = state.get("safe_question") or state["question"]
+        lessons = self._lessons(state, lesson_query(safe_q, context))
         if lessons:
             self._event(state, "draft", f"参考了 {len(lessons)} 条以往经验（{', '.join(c.id for c in lessons)}），只作方法提示，不作为证据")
         try:
-            out = h.llm(role, DRAFT_SYSTEM, draft_user_prompt(state["question"], state.get("company_name", ""), state["ticker"],
+            out = h.llm(role, DRAFT_SYSTEM, draft_user_prompt(safe_q, state.get("company_name", ""), state["ticker"],
                         date.fromisoformat(state["as_of"]), context, quick, state.get("prior"), render_lessons(lessons)),
                         DraftOutput, purpose="draft")
         except TaskCancelled:
