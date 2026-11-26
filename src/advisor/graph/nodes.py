@@ -128,9 +128,9 @@ class Nodes:
             except Exception:  # 小模型不可用不致命：退回大模型
                 out = None
         if out is None:
-            # 入口识别需要保留公司名：先只脱敏金额/账号（「我持有某某1000股」→「我持有某某[已脱敏]」），
-            # 发往模型前 Harness 还会做一次常规脱敏兜底。
-            masked = self.guard.redact_amounts(q)
+            # 入口识别需要保留公司名：用与 find_sensitive 同口径的整块脱敏（跨行拆分的手机号/卡号
+            # 也会被合并命中并遮蔽）；股票代码已在上方从原文本地解析，不依赖模型看见原始数字。
+            masked = self.guard.redact(q)
             try:
                 out = h.llm("classify", INTAKE_SYSTEM, masked, IntakeOut, purpose="intake")
             except TaskCancelled:

@@ -9,6 +9,10 @@ from typing import Any
 from advisor.harness.errors import HarnessDenied
 from advisor.settings import load_yaml
 
+# 代码里直接 h.llm(role) 使用的角色（intake 识别、自动路由判别、起草），
+# policies.yaml 未必引用它们，删改后只会运行期静默退化——启动期一并校验
+CODE_REQUIRED_ROLES = ("classify", "draft", "reason")
+
 
 @dataclass(frozen=True)
 class RoutePolicy:
@@ -55,10 +59,13 @@ class Policy:
         roles: set[str] | None = None
         try:
             models = load_yaml("models.yaml", config_dir)
-            if isinstance(models, dict) and isinstance(models.get("roles"), dict):
-                roles = set(models["roles"])
         except FileNotFoundError:
-            pass                       # 合成配置（测试/嵌入）可以只给 policies+sites
+            models = None              # 合成配置（测试/嵌入）可以只给 policies+sites
+        if models is not None:
+            raw_roles = models.get("roles") if isinstance(models, dict) else None
+            if not isinstance(raw_roles, dict) or not raw_roles:
+                raise ValueError("models.yaml 的 roles 缺失/为空/不是映射：没有任何可用模型角色，拒绝启动")
+            roles = set(raw_roles)
         policy.validate(roles)
         return policy
 
@@ -96,7 +103,11 @@ class Policy:
                 re.compile(pattern)
             except (TypeError, re.error) as e:
                 raise ValueError(f"egress 正则无效：{pattern!r}（{e}）") from e
-        if models_roles:
+        if models_roles is not None:
+            missing_code = [r for r in CODE_REQUIRED_ROLES if r not in models_roles]
+            if missing_code:
+                raise ValueError(f"models.yaml roles 缺少代码硬编码角色：{missing_code}"
+                                 "——入口识别/路由判别/起草会在运行时静默退化，拒绝启动")
             bad_roles: dict[str, str] = {}
             for name, rp in self.routes.items():
                 if rp.llm_role not in models_roles:
