@@ -152,6 +152,9 @@ class Nodes:
             "ticker": code, "company_name": out.company_name or "", "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
         }
+        if not explicit and code:
+            # 回写识别出的股票代码：失败/取消后的「按原参数重试」不再依赖问题文本里仍带代码
+            self.d.repo.update_task(state["task_id"], **{"request.ticker": code})
         if not code:
             if len(codes) > 1:
                 upd.update(status="failed", error=f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"

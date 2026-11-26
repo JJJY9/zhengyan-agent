@@ -26,14 +26,32 @@ export default function Workspace() {
   const [runs, setRuns] = useState<RsiRun[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [cards, setCards] = useState<StrategyCard[]>([]);
+  const [err, setErr] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    api.watch.overview().then((w) => setAlerts(w.alerts.filter((a) => a.status === "open"))).catch(() => undefined);
-    api.strategy.overview().then((o) => setCards(o.cards.filter((c) => c.status === "review"))).catch(() => undefined);
-    api.watchlist().then(setWatch).catch(() => setWatch([]));
-    api.tasks().then(setTasks).catch(() => undefined);
-    api.rsi.overview().then(setRsi).catch(() => undefined);
-    api.rsi.runs().then(setRuns).catch(() => undefined);
-  }, []);
+    let alive = true;
+    let timer: number | undefined;
+    const failed: string[] = [];
+    const track = (what: string, p: Promise<unknown>) =>
+      p.catch((e) => { failed.push(`${what}：${(e as Error).message}`); });
+    Promise.all([
+      track("提醒", api.watch.overview().then((w) => alive && setAlerts(w.alerts.filter((a) => a.status === "open")))),
+      track("策略卡", api.strategy.overview().then((o) => alive && setCards(o.cards.filter((c) => c.status === "review")))),
+      track("档案列表", api.watchlist().then((w) => alive && setWatch(w))),   // 失败保留 null：不能伪装成「还没有档案」
+      track("任务列表", api.tasks().then((t) => alive && setTasks(t))),
+      track("方法版本", api.rsi.overview().then((r) => alive && setRsi(r))),
+      track("RSI 运行", api.rsi.runs().then((r) => alive && setRuns(r))),
+    ]).then(() => {
+      if (!alive) return;
+      if (failed.length) {
+        setErr(`部分数据加载失败（${failed.join("；")}），稍后自动重试`);
+        timer = window.setTimeout(() => setAttempt((x) => x + 1), 5000);
+      } else {
+        setErr("");
+      }
+    });
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [attempt]);
   const top = watch?.[0];
   useAskContext({
     title: "研究台",
@@ -52,6 +70,9 @@ export default function Workspace() {
     <>
       <PageHead title="研究台" sub="行情与估值取自各档案的 A 级证据，截至研究时点，非实时" />
       <div className="page">
+        {err && <div className="error">{err}
+          <button className="ghost" style={{ marginLeft: 8 }} onClick={() => setAttempt((x) => x + 1)}>立即重试</button>
+        </div>}
         <div className="tiles">
           {watch === null ? <div className="muted">加载中…</div> : watch.map((w) => {
             const c = chgClass(w.quote.chg_20d?.value);
@@ -130,7 +151,7 @@ export default function Workspace() {
                     ))}
                   </div>
                 </>
-              ) : <div className="muted">加载中…</div>}
+              ) : err ? <div className="muted">方法版本加载失败，稍后自动重试</div> : <div className="muted">加载中…</div>}
             </section>
             <section className="card">
               <h3>最近研究</h3>
@@ -140,7 +161,7 @@ export default function Workspace() {
                   <span className="fi-sub muted small">{fmtTime(t.created_at)}</span>
                 </Link>
               ))}
-              {!tasks.length && <div className="empty">还没有研究，右侧问顾问试试</div>}
+              {!tasks.length && <div className="empty">{err ? "任务列表加载失败，稍后自动重试" : "还没有研究，右侧问顾问试试"}</div>}
             </section>
           </div>
         </div>

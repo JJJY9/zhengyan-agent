@@ -120,7 +120,7 @@ export interface Task {
 }
 
 export interface AuditRecord {
-  ts: string; kind: "skill" | "llm"; name: string; status: string; duration_ms: number; node?: string; principal?: string;
+  ts: string; kind: "skill" | "llm" | "decision"; name: string; status: string; duration_ms: number; node?: string; principal?: string;
   version?: string; role?: string; tokens?: number; error?: string; trace_id?: string; span_id?: string;
 }
 

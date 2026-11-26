@@ -40,9 +40,13 @@ export default function TaskDetail() {
       nav(`/tasks/${task_id}`);
     } catch (e) {
       setActionErr((e as Error).message);
-      setRetrying(false);
+    } finally {
+      setRetrying(false);          // 成功跳转也要复位：/tasks/:id 参数变化不会重挂载组件
     }
   };
+
+  // 切换到另一条任务时清掉上一条的重试/操作错误（不能并入 [id, tick] 主 effect，否则轮询会清掉刚显示的错误）
+  useEffect(() => { setRetrying(false); setActionErr(""); }, [id]);
   const taskRef = useRef<Task | null>(null);
 
   useEffect(() => {

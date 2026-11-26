@@ -25,8 +25,23 @@ export default function Evals() {
   const [runs, setRuns] = useState<EvalRun[] | null>(null);
   const [run, setRun] = useState<EvalRun | null>(null);
   const [msg, setMsg] = useState("");
+  const [listErr, setListErr] = useState("");
+  const [starting, setStarting] = useState<null | "compare" | "routing" | "update">(null);
 
-  useEffect(() => { api.evals().then(setRuns).catch(() => undefined); }, [msg]);
+  useEffect(() => {
+    let alive = true;
+    let timer: number | undefined;
+    const load = () => {
+      api.evals().then((rs) => { if (!alive) return; setRuns(rs); setListErr(""); })
+        .catch((e) => {
+          if (!alive) return;
+          setListErr((e as Error).message);
+          timer = window.setTimeout(load, 5000);      // 首次加载失败不能磨成永久「加载中…」
+        });
+    };
+    load();
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [msg]);
   useEffect(() => {
     if (!id) { setRun(null); return; }
     let alive = true;
@@ -58,30 +73,42 @@ export default function Evals() {
 
   const startCompare = async () => {
     if (!confirm("对照评测会对每个用例分别跑标准研究与争议深研（约 10-20 分钟，消耗 DeepSeek 额度）。继续？")) return;
+    if (starting) return;               // 双击不重复提交：每次提交都会新建一个 run
+    setStarting("compare");
     try {
       const { run_id } = await api.startCompare({ routes: ["standard", "deep"] });
       api.evals().then(setRuns).catch(() => undefined);
       nav(`/evals/${run_id}`);
     } catch (e) {
       setMsg((e as Error).message);
+    } finally {
+      setStarting(null);
     }
   };
   const startUpdate = async () => {
+    if (starting) return;
+    setStarting("update");
     try {
       const { run_id } = await api.startUpdateEval();
       nav(`/evals/${run_id}`);
       api.evals().then(setRuns);
     } catch (e) {
       setMsg((e as Error).message);
+    } finally {
+      setStarting(null);
     }
   };
   const startRouting = async () => {
+    if (starting) return;
+    setStarting("routing");
     try {
       const { run_id } = await api.startRoutingEval();
       api.evals().then(setRuns).catch(() => undefined);
       nav(`/evals/${run_id}`);          // 评测文档已登记：直接进详情，轮询跟进到完成
     } catch (e) {
       setMsg((e as Error).message);
+    } finally {
+      setStarting(null);
     }
   };
 
@@ -93,21 +120,23 @@ export default function Evals() {
         同一问题、同一 as_of、同一数据与核验规则；评测档案写入隔离命名空间，不进入用户档案。LLM 评分不用于自我验收。
       </p>
       <div className="row-btns">
-        <button className="primary" onClick={startCompare}>运行对照评测</button>
-        <button onClick={startRouting}>运行路由校准</button>
-        <button onClick={startUpdate}>运行持续更新评测</button>
+        <button className="primary" disabled={!!starting} onClick={startCompare}>{starting === "compare" ? "提交中…" : "运行对照评测"}</button>
+        <button disabled={!!starting} onClick={startRouting}>{starting === "routing" ? "提交中…" : "运行路由校准"}</button>
+        <button disabled={!!starting} onClick={startUpdate}>{starting === "update" ? "提交中…" : "运行持续更新评测"}</button>
         {msg && <span className="muted small">{msg}</span>}
       </div>
 
       {run && (run.type === "compare" ? <CompareView run={run} /> : run.type === "update" ? <UpdateView run={run} /> : <RoutingView run={run} />)}
 
       <h2>历史评测</h2>
-      {runs === null ? <p className="muted">加载中…</p> : runs.length === 0 ? <p className="muted">还没有评测。</p> : (
+      {runs === null ? (listErr
+        ? <div className="error">评测列表加载失败：{listErr}（稍后自动重试）</div>
+        : <p className="muted">加载中…</p>) : runs.length === 0 ? <p className="muted">还没有评测。</p> : (
         <div className="list">
           {runs.map((r) => (
             <Link key={r.run_id} to={`/evals/${r.run_id}`} className={`list-item ${r.run_id === id ? "current" : ""}`}>
               <span className="tag">{({ compare: "对照评测", routing: "路由校准", update: "持续更新" } as Record<string, string>)[r.type]}</span>
-              <StatusBadge status={r.status} />
+              <StatusBadge status={isQueued(r) ? "queued" : r.status} />
               <span className="grow">
                 {r.status === "failed" ? `失败：${r.error ?? "评测未完成"}` :
                   r.type === "compare" ? (r.status === "running" ? (isQueued(r) ? "排队中：等待空闲的后台线程" : "评测进行中…") : (r.summary?.verdict.text ?? "—")) :

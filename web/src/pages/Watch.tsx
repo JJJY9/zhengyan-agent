@@ -91,7 +91,9 @@ export default function Watch() {
                     </>
                   ) : <button className="ghost" onClick={() => setDismiss({ id: a.id, note: "" })}>忽略</button>}
                 </>
-              ) : <Link className="button ghost" to={`/tasks/${a.review_task_id}`}>查看研究进度</Link>}
+              ) : a.review_task_id && a.review_task_id !== "pending" ? (
+                <Link className="button ghost" to={`/tasks/${a.review_task_id}`}>查看研究进度</Link>
+              ) : <span className="muted small">复核任务准备中…</span>}
             </div>
             {a.status === "open" && <p className="muted small" style={{ marginBottom: 0 }}>
               用新数据重新研究：基于最新财报、公告和行情再研究一次，生成档案新版本，并逐条说明上面的旧结论是否还成立（旧版本保留）。忽略：你认为这批变化不影响结论，填写原因后关闭提醒，档案不变。</p>}
