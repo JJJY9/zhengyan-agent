@@ -24,6 +24,18 @@
     {"question": "隆基绿能 601012 行业产能过剩下是否已经见底，有哪些反证", "label": "deep"},
     {"question": "招商银行 600036 地产风险敞口会不会显著侵蚀利润，悲观情景下怎样", "label": "deep"},
     {"question": "恒瑞医药 600276 集采和创新药出海哪个影响更大，结论分歧在哪", "label": "deep"},
-    {"question": "五粮液 000858 渠道库存高企与业绩增长并存，可信度如何", "label": "deep"}
+    {"question": "五粮液 000858 渠道库存高企与业绩增长并存，可信度如何", "label": "deep"},
+    {"question": "分众传媒 002027 现在股价多少", "label": "quick"},
+    {"question": "PE和PB分别怎么算", "label": "quick", "intent": "explain"},
+    {"question": "中国平安 601318 股息率是多少", "label": "quick"},
+    {"question": "经营活动现金流净额是什么指标", "label": "quick", "intent": "explain"},
+    {"question": "京东方A 000725 最新一期单季毛利率变化", "label": "standard"},
+    {"question": "海康威视 002415 半年报应收和现金流是否匹配", "label": "standard"},
+    {"question": "万华化学 600309 最新季报业绩与去年同期同口径对比", "label": "standard"},
+    {"question": "伊利股份 600887 半年报利润质量怎么样", "label": "standard"},
+    {"question": "京东方A 000725 面板周期见底了吗，多空双方的核心论据分别是什么", "label": "deep"},
+    {"question": "海康威视 002415 海外制裁风险对长期价值影响多大，有哪些反证", "label": "deep"},
+    {"question": "万华化学 600309 行业扩产周期与公司盈利能力的矛盾怎么看，分歧在哪", "label": "deep"},
+    {"question": "伊利股份 600887 人口结构变化下乳业增长逻辑是否失效，该信谁的观点", "label": "deep"}
   ]
 }
