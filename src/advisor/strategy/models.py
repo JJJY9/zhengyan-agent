@@ -105,6 +105,7 @@ class NavPoint(BaseModel):
     card_id: str
     version: int
     date: date
+    seq: int = 0                              # 并发认领序号：同卡同版本按 seq 唯一，先写者胜出
     nav: float
     cash: float
     positions: list[Position] = Field(default_factory=list)

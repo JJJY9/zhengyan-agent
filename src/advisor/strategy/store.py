@@ -29,6 +29,10 @@ class StrategyStore:
         # 同一张卡只能有一个已晋级版本：并发 approve 时后到者会被唯一索引拦下
         self.cards.create_index("card_id", unique=True, partialFilterExpression={"status": "promoted"})
         self.navs.create_index([("card_id", ASCENDING), ("version", ASCENDING), ("date", ASCENDING)], unique=True)
+        # 并发认领：不同进程基于同一快照推进不同日期时，(card, version, seq) 唯一让后写者失败并重算；
+        # 历史数据没有 seq，用部分索引避开
+        self.navs.create_index([("card_id", ASCENDING), ("version", ASCENDING), ("seq", ASCENDING)], unique=True,
+                               partialFilterExpression={"seq": {"$gt": 0}})
         self.trades.create_index([("card_id", ASCENDING), ("version", ASCENDING), ("date", ASCENDING)])
 
     # ---------- 版本 ----------
