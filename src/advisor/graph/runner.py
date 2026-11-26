@@ -35,9 +35,32 @@ class ResearchService:
         self._side_pool = ThreadPoolExecutor(max_workers=side_workers, thread_name_prefix="sidejob")
         self._side_gate = threading.Lock()
         self._side_pending = 0
+        # 进程租约：回收僵尸任务只信租约（排队中的任务没有心跳，年龄判定会误杀）
+        self.instance = "inst_" + uuid.uuid4().hex[:10]
+        self._hb_stop = threading.Event()
+        threading.Thread(target=self._heartbeat, name="advisor-lease", daemon=True).start()
         self.guard = EgressGuard(
             deps.policy.egress.get("sensitive_patterns", []), deps.policy.egress.get("trade_intent_patterns", [])
         )
+
+    def _heartbeat(self) -> None:
+        while True:
+            try:
+                self.deps.repo.touch_lease(self.instance)
+            except Exception:      # noqa: BLE001  续租失败不应打断服务
+                pass
+            if self._hb_stop.wait(60):
+                return
+
+    def shutdown(self) -> None:
+        """服务停机：停止续租、取消排队中的作业与任务，把注定不会再执行的任务标取消。"""
+        self._hb_stop.set()
+        for pool in (self._side_pool, self._pool):
+            pool.shutdown(wait=False, cancel_futures=True)
+        try:
+            self.deps.repo.cancel_queued_tasks(self.instance, "服务停止：排队中的任务已取消")
+        except Exception:      # noqa: BLE001
+            pass
 
     def _acquire_or_raise(self) -> None:
         with self._gate:
@@ -66,7 +89,8 @@ class ResearchService:
             # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
             request_doc = req.model_dump(mode="json")
             request_doc["question"] = self.guard.redact(req.question)
-            self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}))
+            self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}),
+                                       instance=self.instance)
             payload = {
                 "task_id": task_id, "question": req.question, "ticker": req.ticker, "namespace": namespace or "",
                 "as_of": (req.as_of or date.today()).isoformat(), "route_requested": req.route,
@@ -169,7 +193,9 @@ class ResearchService:
     def _run(self, task_id: str, payload: Any) -> None:
         repo = self.deps.repo
         config = {"configurable": {"thread_id": task_id}, "recursion_limit": 60}
-        repo.update_task(task_id, status="running")
+        if not repo.mark_running(task_id):
+            return                     # 已被回收/取消：绝不复活执行
+        repo.touch_lease(self.instance)
         try:
             with span("research", task_id=task_id):
                 result = self.graph.invoke(payload, config)

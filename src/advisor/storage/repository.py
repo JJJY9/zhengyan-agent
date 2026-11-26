@@ -41,6 +41,7 @@ class Repository:
         self.db.working_memory.create_index([("task_id", ASCENDING), ("created_at", ASCENDING)])
         self.db.working_memory.create_index("expires_at", expireAfterSeconds=0)   # 研究记忆到期自动清理
         self.db.eval_runs.create_index("run_id", unique=True)
+        self.db.leases.create_index("instance", unique=True)
 
     def ping(self) -> bool:
         self.db.command("ping")
@@ -131,11 +132,40 @@ class Repository:
         return list(self.db.dossiers.aggregate(pipeline))
 
     # ---------- 任务 ----------
-    def create_task(self, task_id: str, request: dict) -> None:
+    def create_task(self, task_id: str, request: dict, instance: str | None = None) -> None:
         self.db.tasks.insert_one({
-            "task_id": task_id, "request": request, "status": "queued", "events": [],
+            "task_id": task_id, "request": request, "status": "queued", "events": [], "instance": instance,
             "interrupt": None, "result": None, "error": None, "created_at": _now(), "updated_at": _now(),
         })
+
+    # ---------- 进程租约：回收僵尸任务只信租约，不信队列任务的年龄 ----------
+    def touch_lease(self, instance: str) -> None:
+        self.db.leases.update_one({"instance": instance}, {"$set": {"ts": _now()}}, upsert=True)
+
+    def lease_alive(self, instance: str, ttl_s: float = 180.0) -> bool:
+        doc = self.db.leases.find_one({"instance": instance})
+        if not doc or not doc.get("ts"):
+            return False
+        ts = doc["ts"] if doc["ts"].tzinfo else doc["ts"].replace(tzinfo=timezone.utc)
+        return ts > _now() - timedelta(seconds=ttl_s)
+
+    def mark_running(self, task_id: str) -> bool:
+        """CAS 启动：只有仍处于 queued/running 的任务才真正执行。
+
+        回收/取消可能已把任务标为 failed/cancelled：此时绝不能再「复活」执行。"""
+        doc = self.db.tasks.find_one_and_update(
+            {"task_id": task_id, "status": {"$in": ["queued", "running"]}},
+            {"$set": {"status": "running", "updated_at": _now()}},
+        )
+        return doc is not None
+
+    def cancel_queued_tasks(self, instance: str, reason: str) -> int:
+        """服务停机：本实例还在排队、注定不会再执行的任务直接标取消。"""
+        res = self.db.tasks.update_many(
+            {"status": "queued", "instance": instance},
+            {"$set": {"status": "cancelled", "error": reason, "updated_at": _now()}},
+        )
+        return res.modified_count
 
     def update_task(self, task_id: str, **fields: Any) -> None:
         fields["updated_at"] = _now()
@@ -175,37 +205,62 @@ class Repository:
         )
 
     def request_cancel(self, task_id: str) -> str | None:
-        """撤销授权/取消：等待确认的任务立即取消；运行中的任务在下一个检查点停止。"""
-        task = self.get_task(task_id)
-        if not task or task["status"] not in ("queued", "running", "waiting_approval"):
-            return None
-        status = "cancelled" if task["status"] == "waiting_approval" else task["status"]
-        self.db.tasks.update_one({"task_id": task_id}, {"$set": {"cancel_requested": True, "status": status, "updated_at": _now()}})
-        return status
+        """撤销授权/取消（原子条件更新，绝不回写读到的旧状态）。
+
+        等待确认的任务立即取消；运行中的任务只置取消标志，在下一个检查点停止。
+        旧实现先读状态再无条件写回：任务在读写间隙完成时会被改回 running 且无人推进。
+        """
+        doc = self.db.tasks.find_one_and_update(
+            {"task_id": task_id, "status": "waiting_approval"},
+            {"$set": {"status": "cancelled", "cancel_requested": True, "updated_at": _now()}},
+        )
+        if doc is not None:
+            return "cancelled"
+        doc = self.db.tasks.find_one_and_update(
+            {"task_id": task_id, "status": {"$in": ["queued", "running"]}},
+            {"$set": {"cancel_requested": True, "updated_at": _now()}},
+        )
+        return doc["status"] if doc else None
 
     def is_cancel_requested(self, task_id: str) -> bool:
         doc = self.db.tasks.find_one({"task_id": task_id}, projection={"cancel_requested": 1})
         return bool(doc and doc.get("cancel_requested"))
 
-    def recover_stale_tasks(self, max_age_s: float) -> int:
-        """进程重启/线程死亡后遗留的 queued/running 任务标记失败。
+    def recover_stale_tasks(self, max_age_s: float, lease_ttl_s: float = 180.0) -> int:
+        """回收无主任务：所属进程租约失效的 queued/running 一律标记失败。
 
-        任务只会在状态变化或节点事件时写 updated_at：一次模型调用最长 300s，
-        停滞超过阈值的任务不可能还活着（单进程部署；并行的 CLI 任务也会持续写事件）。
+        排队中的任务不写 updated_at，只看年龄会误杀活进程的排队任务（实测：排队>30 分钟后被
+        标 failed、随后线程池照常跑成 done）。以实例租约为准；历史数据（无 instance）退回按
+        停滞年龄判断。
         """
         cutoff = _now() - timedelta(seconds=max_age_s)
-        ids = [d["task_id"] for d in self.db.tasks.find(
-            {"status": {"$in": ["queued", "running"]}, "updated_at": {"$lt": cutoff}}, projection={"task_id": 1})]
+        ids: list[str] = []
+        alive: dict[str, bool] = {}
+        for d in self.db.tasks.find({"status": {"$in": ["queued", "running"]}},
+                                    projection={"task_id": 1, "instance": 1, "updated_at": 1}):
+            inst = d.get("instance")
+            if inst:
+                if inst not in alive:
+                    alive[inst] = self.lease_alive(inst, lease_ttl_s)
+                if alive[inst]:
+                    continue                      # 进程还活着（哪怕任务在排队一动不动）
+            elif not (d.get("updated_at") and d["updated_at"] < cutoff):
+                continue                          # 历史数据没有租约：退回按停滞年龄判断
+            ids.append(d["task_id"])
         if not ids:
             return 0
+        matched = [d["task_id"] for d in self.db.tasks.find(
+            {"task_id": {"$in": ids}, "status": {"$in": ["queued", "running"]}}, projection={"task_id": 1})]
+        if not matched:
+            return 0
         self.db.tasks.update_many(
-            {"task_id": {"$in": ids}},
+            {"task_id": {"$in": matched}, "status": {"$in": ["queued", "running"]}},
             {"$set": {"status": "failed", "updated_at": _now(),
-                      "error": "任务长时间无进展（进程重启或线程死亡），已标记失败；可重新发起"}},
+                      "error": "任务所属进程已不在（崩溃或无租约），已标记失败；可重新发起"}},
         )
-        for task_id in ids:
-            self.push_event(task_id, "runner", "发现停滞任务，已自动标记失败，可重新发起")
-        return len(ids)
+        for task_id in matched:
+            self.push_event(task_id, "runner", "所属进程已不在，已自动标记失败，可重新发起")
+        return len(matched)
 
     def get_task(self, task_id: str) -> dict | None:
         return _clean(self.db.tasks.find_one({"task_id": task_id}))

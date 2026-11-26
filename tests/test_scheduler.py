@@ -8,7 +8,7 @@ class FakeWatch:
     def __init__(self, fail: bool = False):
         self.fail = fail
 
-    def scan_all(self, log=None):
+    def scan_all(self, log=None, is_cancelled=lambda: False):
         if self.fail:
             raise RuntimeError("扫描失败")
         return []
@@ -19,7 +19,7 @@ class FakeStrategy:
         self.called = 0
         self.on_tick = on_tick
 
-    def step_all(self, day=None, log=None):
+    def step_all(self, day=None, log=None, is_cancelled=lambda: False):
         self.called += 1
         if self.on_tick:
             self.on_tick()

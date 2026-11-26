@@ -58,11 +58,26 @@ class WatchStore:
         doc = self.alerts.find_one({"id": alert_id}, projection={"_id": 0})
         return Alert.model_validate(doc) if doc else None
 
-    def try_start_review(self, alert_id: str) -> bool:
-        """原子地把「待处理」提醒切到复核中：并发双击/多标签页只有一个能真正发起复核。"""
-        doc = self.alerts.find_one_and_update({"id": alert_id, "status": "open"},
-                                              {"$set": {"status": "reviewing"}})
+    def claim_review(self, alert_id: str) -> bool:
+        """原子领取复核：状态、占位 task_id 与领取时间同一次写入。
+
+        分两步写（先置 reviewing 再回填 task_id）时，并发 sync 会把中间态当成「任务缺失」重置回 open，
+        复核完成后永远无法 resolve；占位 pending + 领取时间让 sync 能区分「正在创建」与「真的丢了」。"""
+        doc = self.alerts.find_one_and_update(
+            {"id": alert_id, "status": "open"},
+            {"$set": {"status": "reviewing", "review_task_id": "pending",
+                      "review_started_at": _now().isoformat()}},
+        )
         return doc is not None
+
+    def finish_review(self, alert_id: str, task_id: str) -> None:
+        self.alerts.update_one({"id": alert_id, "review_task_id": "pending"},
+                               {"$set": {"review_task_id": task_id}, "$unset": {"review_started_at": ""}})
+
+    def release_review(self, alert_id: str) -> None:
+        """起任务失败：把领取放回待处理，允许重试。"""
+        self.alerts.update_one({"id": alert_id, "review_task_id": "pending"},
+                               {"$set": {"status": "open", "review_task_id": None}, "$unset": {"review_started_at": ""}})
 
     def list_alerts(self, ticker: str | None = None, status: str | None = None, limit: int = 100) -> list[Alert]:
         q = {k: v for k, v in (("ticker", ticker), ("status", status)) if v}
