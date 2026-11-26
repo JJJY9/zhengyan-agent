@@ -38,6 +38,8 @@ services:
         required: false
     environment:
       MONGO_URI: mongodb://mongo:27017          # 容器内通过服务名访问 mongo，覆盖 .env 里的 localhost
+      # 经反向代理暴露时设为反向代理的容器地址（如 172.18.0.1），让登录限速按真实客户端 IP 计数
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       # 本地 Kev 决策小模型跑在宿主机时（只支持 Apple Silicon + MLX），在 .env 里设
       # DECISION_BASE_URL=http://host.docker.internal:8009；不设则意图/路由判别自动退回大模型
     extra_hosts:

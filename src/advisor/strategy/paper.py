@@ -91,11 +91,33 @@ class PaperBook:
             raise PaperError(f"{day} 晚于今天：模拟盘不能推进到未来")
         if card.paper_start and day < card.paper_start:
             raise PaperError(f"{day} 早于模拟开始日 {card.paper_start}：模拟盘只能向前")
-        navs = self.store.navs_of(card.card_id, card.version)
-        if navs and day <= navs[-1].date:
-            if day == navs[-1].date:
-                return navs[-1]                                              # 同一天重复推进：幂等
-            raise PaperError(f"{day} 不晚于上一个净值点 {navs[-1].date}：模拟盘只能向前")
+        for _ in range(3):
+            navs = self.store.navs_of(card.card_id, card.version)
+            if navs and day <= navs[-1].date:
+                if day == navs[-1].date:
+                    return navs[-1]                                          # 同一天重复推进：幂等
+                raise PaperError(f"{day} 不晚于上一个净值点 {navs[-1].date}：模拟盘只能向前")
+            point, trades = self._compute(card, day, navs)
+            point = point.model_copy(update={"seq": len(navs) + 1})         # 序号即并发认领：后写者撞唯一索引
+            try:
+                self.store.add_nav(point)
+            except DuplicateKeyError:
+                latest = self.store.navs_of(card.card_id, card.version)
+                if latest and day <= latest[-1].date:
+                    if day == latest[-1].date:
+                        return latest[-1]
+                    raise PaperError(f"{day} 不晚于上一个净值点 {latest[-1].date}：模拟盘只能向前")
+                continue                       # 另一进程先推进了更早的日期：基于新净值重算
+            try:
+                self.store.add_trades(trades)
+            except Exception:
+                self.store.delete_nav(card.card_id, card.version, day)   # 成交没写上：撤销净值点，重试补齐
+                raise
+            return point
+        raise PaperError("并发推进冲突：请稍后重试")
+
+    def _compute(self, card: StrategyVersion, day: date, navs: list[NavPoint]) -> tuple[NavPoint, list[PaperTrade]]:
+        """按已有净值快照计算当天净值与成交（不做写入；并发认领由 _step_once 负责）。"""
         cash = navs[-1].cash if navs else self.initial_cash
         held = {p.ticker: p for p in (navs[-1].positions if navs else [])}
         h = self.deps.harness(f"paper_{card.card_id}_v{card.version}", "quick", day,
@@ -158,18 +180,7 @@ class PaperBook:
         point = NavPoint(card_id=card.card_id, version=card.version, date=day, cash=round(cash, 2),
                          nav=round(cash + sum(p.shares * p.price for p in held.values()), 2),
                          positions=list(held.values()), notes=notes)
-        # 唯一索引 (card_id, version, date) 充当幂等闸门：定时推进与手动推进并发时只允许一个写入。
-        # 先写净值再写成交：输掉竞争的一侧不产生重复成交（旧顺序会先把成交写两遍，再在净值处崩掉）。
-        try:
-            self.store.add_nav(point)
-        except DuplicateKeyError:
-            return self.store.navs_of(card.card_id, card.version)[-1]
-        try:
-            self.store.add_trades(trades)
-        except Exception:
-            self.store.delete_nav(card.card_id, card.version, day)   # 成交没写上：撤销净值点，重试补齐
-            raise
-        return point
+        return point, trades
 
 
 def nav_stats(navs: list[NavPoint], initial: float) -> dict:
