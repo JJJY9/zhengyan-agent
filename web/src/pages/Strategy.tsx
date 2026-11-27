@@ -39,6 +39,7 @@ export default function Strategy() {
     if (!form || busy) return;                       // 双击创建两张卡：提交期间禁止重入
     setBusy(true);
     setError("");
+    setUniErr("");                                   // 上一份表单的候选股校验不能带进本次提交
     try {
       const { universe, ...rest } = form;
       // 空串不能被 Number("") 当成 0 通过校验：编辑期保留字符串，提交前统一转换
@@ -81,8 +82,8 @@ export default function Strategy() {
       <PageHead title="策略与模拟盘" sub="规则显式、只向前模拟、晋级须过门控并由你批准；不执行任何真实交易"
         right={<>
           <button disabled={busy} onClick={step}>{busy ? "推进中…" : "推进模拟盘到今天"}</button>
-          <button className="primary" onClick={() => setForm({ name: "", thesis: "", universe: "", entry: DEFAULT_ENTRY, exit: DEFAULT_EXIT,
-            max_positions: "5", stop_loss_pct: "15", max_drawdown_limit: "20", change_reason: "" })}>新建策略卡</button>
+          <button className="primary" onClick={() => { setUniErr(""); setForm({ name: "", thesis: "", universe: "", entry: DEFAULT_ENTRY, exit: DEFAULT_EXIT,
+            max_positions: "5", stop_loss_pct: "15", max_drawdown_limit: "20", change_reason: "" }); }}>新建策略卡</button>
         </>} />
       <div className="page">
         {error && <div className="error">{error}</div>}
@@ -112,7 +113,7 @@ export default function Strategy() {
             <label>改动理由（不少于 10 个字）<input value={form.change_reason} onChange={(e) => setForm({ ...form, change_reason: e.target.value })} /></label>
             <div className="row-btns" style={{ margin: 0 }}>
               <button className="primary" disabled={busy || form.change_reason.trim().length < 10 || form.name.trim().length < 2} onClick={create}>保存为草稿</button>
-              <button className="ghost" onClick={() => setForm(null)}>取消</button>
+              <button className="ghost" onClick={() => { setUniErr(""); setForm(null); }}>取消</button>
             </div>
           </section>
         )}

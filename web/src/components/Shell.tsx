@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { nodeLabel, ROUTE_LABEL, today } from "../format";
+import { ashareCodes, nodeLabel, ROUTE_LABEL, today } from "../format";
 import type { Evidence, Task, WatchRow } from "../types";
 import EvidenceCard from "./EvidenceCard";
 import {
@@ -114,11 +114,12 @@ function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi, watchErr, on
         <div className="sb-sec"><span className="grow">我的档案</span></div>
         <div className="wl-head"><span>标的（{watch === null ? (watchErr ? "—" : "…") : watch.length}）</span><span title="研究当时取到的近 20 个交易日涨跌幅，不是实时行情">近 20 日涨跌</span></div>
         <div className="wl-list">
-          {watchErr ? (
-            <div className="wl-head" style={{ color: "var(--danger, #c33)" }}>档案列表加载失败（稍后自动重试）
+          {watchErr && (
+            <div className="wl-head" style={{ color: "var(--danger, #c33)" }} title={watchErr}>档案列表加载失败（稍后自动重试）
               <button className="ghost small" onClick={onRetryWatch}>重试</button></div>
-          ) : watch === null ? <div className="wl-head">加载中…</div> : watch.length === 0 ? (
-            <div className="wl-head">还没有档案</div>
+          )}
+          {watch === null ? (watchErr ? null : <div className="wl-head">加载中…</div>) : watch.length === 0 ? (
+            watchErr ? null : <div className="wl-head">还没有档案</div>
           ) : visibleWatch.map((w) => {
             const chg = w.quote.chg_20d?.value;
             return (
@@ -330,12 +331,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [drawer, setDrawer] = useState<{ items: Evidence[]; title: string } | null>(null);
   const [watch, setWatch] = useState<WatchRow[] | null>(null);
   const [watchErr, setWatchErr] = useState("");
+  const [watchTick, setWatchTick] = useState(0);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [pendingRsi, setPendingRsi] = useState(0);
 
   const loadWatch = useCallback(() => {
     api.watchlist().then((w) => { setWatch(w); setWatchErr(""); })
-      .catch((e) => setWatchErr((e as Error).message));   // 失败保留旧状态，不能伪装成「还没有档案」
+      .catch((e) => { setWatchErr((e as Error).message); setWatchTick((x) => x + 1); });   // 失败保留旧状态，不能伪装成「还没有档案」
   }, []);
   const refresh = useCallback(() => {
     loadWatch();
@@ -343,12 +345,13 @@ export default function Shell({ children }: { children: React.ReactNode }) {
     api.rsi.runs().then((rs) => setPendingRsi(rs.filter((r) => r.status === "review" || r.status === "approved").length)).catch(() => undefined);
   }, [loadWatch]);
   useEffect(refresh, [refresh]);
-  // 档案列表加载失败：5 秒后自动重试（恢复后侧栏自动纠正）
+  // 档案列表加载失败：5 秒后自动重试（恢复后侧栏自动纠正）。
+  // watchTick 每次失败递增：同一错误文案不会触发 React 同值 bail out，定时器才能持续重新武装。
   useEffect(() => {
     if (!watchErr) return;
     const timer = window.setTimeout(loadWatch, 5000);
     return () => window.clearTimeout(timer);
-  }, [watchErr, loadWatch]);
+  }, [watchErr, watchTick, loadWatch]);
   // 有进行中/待确认任务时每 4 秒刷新一次侧栏计数；全部结束后自动停止
   useEffect(() => {
     if (!tasks.some((t) => ["queued", "running", "waiting_approval"].includes(t.status))) return;
@@ -360,9 +363,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
 
   const submit = useCallback(async (question: string, route: string, as_of: string, ticker?: string) => {
-    // 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用；财务数字（208448 万元）不是代码，
-    // 不能因此丢掉页面上下文（否则后端会「未能识别 A 股代码」）
-    const codes = question.match(/(?<!\d)([036]\d{5}|[48]\d{5}|92\d{4})(?!\d)/g) ?? [];
+    // 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用；财务数字（208448 万元）不是代码。
+    // 判定与后端 nodes._codes_of 同口径（全角数字归一、允许代码内一个空白），否则 '600 519'
+    // 这类后端能解析的写法会让页面 ticker 静默覆盖点名股票。
+    const codes = ashareCodes(question);
     const t = ticker && !codes.some((c) => c !== ticker) ? ticker : undefined;
     const { task_id } = await api.research({ question, route, as_of, ticker: t });
     setTurns((ts) => [...ts, { task_id, question, route, as_of, ts: Date.now() }]);

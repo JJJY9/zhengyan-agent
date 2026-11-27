@@ -79,3 +79,17 @@ export function zh(text: string | null | undefined): string {
   return text.replace(TERM_RE, (w) => TERM_LABEL[w])
     .replace(/门禁/g, "门控").replace(/(质量|噪声|成本|回归|审批)门(?!控)/g, "$1门控");
 }
+
+// A 股代码形态（与后端 nodes._CODE / _CODE_SPACED 同口径）：0/3/6 开头 6 位、4/8 开头 6 位、
+// 92 开头 4 位；允许代码内一个空白（'600 519'）。全角数字先归一，否则后端能识别的代码前端会漏判。
+const A_SHARE_CODE = /(?<!\d)(?:[036]\d{2}\s?\d{3}|[036]\d{5}|[48]\d{5}|92\d{4})(?!\d)/;
+export function normDigits(q: string): string {
+  return q.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+}
+export function ashareCodes(q: string): string[] {
+  const re = new RegExp(A_SHARE_CODE.source, "g");
+  return (normDigits(q).match(re) ?? []).map((c) => c.replace(/\s+/g, ""));
+}
+export function hasAshareCode(q: string): boolean {
+  return A_SHARE_CODE.test(normDigits(q));
+}
