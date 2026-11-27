@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from advisor.contracts import ResearchRequest
 from advisor.graph.deps import build_deps
-from advisor.graph.nodes import _codes_of, _codes_of_loose, _codes_with_dropped
+from advisor.graph.nodes import _codes_of, _codes_of_loose, _codes_with_dropped, _name_evidence
 from advisor.graph.runner import ResearchService
 from advisor.skills.research.earnings_review import IntakeOut
 from tests.fakes import CODE, NAME, FakeDecision, FakeLLM, FakeSource, FakeWebTools, as_of
@@ -574,3 +574,69 @@ def test_small_decide_masks_multiline_amounts(repo, policy):
     assert decision.calls
     text = decision.calls[0]
     assert "[已脱敏]" in text and "600519" not in text and "30" not in text.replace("[已脱敏]", "")
+
+def test_small_path_multi_code_not_shortcut_by_name(repo, policy):
+    """small 分类器路径不得把档案名当捷径绕过『多码必须显式失败』。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    svc = _svc(repo, policy, decision=FakeDecision())
+    tid = svc.start(ResearchRequest(question=f"{NAME}、600519和000001比怎么样", as_of=as_of(), route="quick"),
+                    background=False)
+    task = repo.get_task(tid)
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "")
+    assert task["request"].get("ticker") is None
+
+
+def test_multi_code_error_mentions_tracked_names(repo, policy):
+    """多码失败文案同时列出问题点名的档案名。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run(repo, policy, f"{NAME}、600519和000001比怎么样")
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "") and NAME in (task.get("error") or "")
+
+
+def test_industry_words_not_evidence_anywhere():
+    """通用行业词（汽车/保险/石油石化近名/中国中×）在任何分支都不作数。"""
+    assert not _name_evidence("长城汽车", "汽车板块最近怎么走")
+    assert not _name_evidence("新华保险", "保险板块最近怎么样")
+    assert not _name_evidence("中国石化", "中国石油最近怎么样")      # 3 字片段『中国石』被停用词过滤
+    assert not _name_evidence("中国中免", "中国中车最近怎么样")
+    assert _name_evidence("宁德时代", "宁德最近怎么样")               # 2 字前缀简称仍可召回
+    assert _name_evidence("360", "360这家公司怎么样")                 # 非 6 位纯数字名可用
+
+
+def test_industry_evidence_e2e_fails(repo, policy):
+    task = _run_llm(repo, policy, _EchoTickerLLM("601633", company="长城汽车"), "汽车板块最近怎么走")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("600028", company="中国石化"), "中国石油最近怎么样")
+    assert task2["status"] == "failed" and task2["request"].get("ticker") is None
+
+
+def test_multiple_tracked_names_fail_explicitly(repo, policy):
+    """同句点名多家已跟踪公司：显式失败并列出名字，不再 next() 静默选定。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    repo.db.dossiers.insert_one({"key": "300750", "ticker": "300750", "name": "宁德时代", "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run(repo, policy, f"{NAME}和宁德时代哪个好")
+    assert task["status"] == "failed"
+    assert "多家已跟踪公司" in (task.get("error") or "")
+    assert task["request"].get("ticker") is None
+
+
+def test_company_name_synced_to_known_or_cleared(repo, policy):
+    """最终标的与模型代码不一致时：有档案用档案名，无档案不沿用模型的公司名。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001", company="平安银行"), f"{CODE}最近怎么样")
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any(f"（{NAME}）" in m for m in notes)
+    assert not any("平安银行" in m for m in notes)
+
+
+def test_decimal_and_dot_code_runs_kept():
+    """句点后长数字不再因空字符串被当金额：'600519.123' 与 '600519.300750' 都保留代码。"""
+    assert _codes_with_dropped("600519.123")[0] == {"600519"}
+    assert _codes_with_dropped("600519.300750")[0] == {"600519", "300750"}

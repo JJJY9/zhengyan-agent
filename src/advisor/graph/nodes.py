@@ -143,7 +143,7 @@ def _unit_at(s: str, k: int) -> bool:
     ch = rest[:1]
     if ch and ch in _UNIT_ALWAYS:
         return True
-    if ch in "元手":
+    if ch in ("元", "手"):
         nxt = s[_next_fmt(s, k + 1):][:1]
         if ch == "手":
             return not _is_cjk(nxt)
@@ -260,22 +260,32 @@ def _mask_six(text: str) -> str:
 
 
 _NAME_STOP_TAILS = ("银行", "科技", "证券", "股份", "集团", "控股", "国际", "中国", "能源",
-                    "电力", "医药", "实业", "投资", "发展", "产业", "板块")
+                    "电力", "医药", "实业", "投资", "发展", "产业", "板块", "汽车", "保险",
+                    "航空", "传媒", "钢铁", "石油", "石化", "电器", "时代", "地产", "建筑",
+                    "机械", "家电", "食品", "饮料", "酒业", "港口", "航运", "船舶", "军工")
 
 
 def _name_evidence(name: str, qn: str) -> bool:
     """模型自报公司名与问题文本的弱匹配（防幻觉的弱证据门槛）：
-    全名包含，或 ≥3 字公共片段，或公司名尾简称（≥2 字）出现在问题里；
-    纯数字/纯标点与通用行业词尾（银行/科技/中国…）不作数，避免通用词为任意模型码背书。"""
+    整名等于通用行业词、或公共片段含通用行业词（中国石油/中国石化 的『中国石』）都不作数；
+    全名包含、无停用词的 ≥3 字片段、或 2 字首/尾简称（避开停用词）出现在问题里才算证据。
+    纯数字名只认非 6 位形态（'360' 可用，A 股代码形态不算名称）。"""
     name = re.sub(r"[\s\W_]+", "", name or "")
-    if len(name) < 2 or name.isdigit():
+    if not name:
+        return False
+    if name.isdigit():
+        return len(name) != 6 and name in qn
+    if len(name) < 2 or name in _NAME_STOP_TAILS:
         return False
     if name in qn:
         return True
-    if len(name) >= 3 and any(name[i:i + 3] in qn for i in range(len(name) - 2)):
+    grams = [name[i:i + 3] for i in range(len(name) - 2)]
+    if any(g in qn and not any(sw in g for sw in _NAME_STOP_TAILS) for g in grams):
         return True
-    tail = name[-2:]
-    return tail not in _NAME_STOP_TAILS and tail in qn
+    for short in (name[:2], name[-2:]):
+        if short not in _NAME_STOP_TAILS and short in qn:
+            return True
+    return False
 
 
 class Nodes:
@@ -348,7 +358,8 @@ class Nodes:
                 # 已给 explicit 时模型结果不会被采用，保留 small 以免多一次大模型调用
                 and not (dropped and explicit is None)):
             try:
-                out = self._intake_small(h, self.guard.redact_question(q), code or name_code, known)
+                small_code = code or (name_code if not codes and len(name_hits) == 1 else None)
+                out = self._intake_small(h, self.guard.redact_question(q), small_code, known)
                 if out is not None:
                     small_src = "code" if code else "name"   # 小模型路径回显的是本地解析结果
             except TaskCancelled:
@@ -398,7 +409,7 @@ class Nodes:
             # 模型码被拒或不存在时的本地兜底（顺序独立，避免被 elif 链跳过）
             if code is None and len(codes) == 1:
                 code, code_src = next(iter(codes)), "code"
-            if code is None and not codes and name_code:
+            if code is None and not codes and len(name_hits) == 1 and name_code:
                 code, code_src = name_code, "name"
             if code is None and not codes and len(loose) == 1:
                 # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的。
@@ -426,8 +437,10 @@ class Nodes:
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
         company = out.company_name or ""
-        if code_src == "name" and code and known.get(code):
-            company = known[code]   # 回退本地档案名时同步公司名，避免与模型名错配
+        if code and known.get(code):
+            company = known[code]   # 已知档案名权威：与最终标的对齐
+        elif not (_CODE.fullmatch(model_ticker) and model_ticker == code):
+            company = ""            # 模型代码与最终标的不一致：不沿用其公司名（避免 600999 配『平安银行』）
         upd = {
             "ticker": code, "company_name": company, "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
@@ -442,8 +455,18 @@ class Nodes:
             if len(codes) > 1:
                 if loose:
                     say(f"问题里的数字被拆开且出现候选（{'、'.join(sorted(loose))}），未自动选择")
-                upd.update(status="failed", error=safe(f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
+                why = ""
+                if name_hits:
+                    names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
+                    why = f"（问题还点名了 {names}）"
+                    say(f"注意：问题还点名了 {names}")
+                upd.update(status="failed", error=safe(f"问题里出现多个股票代码（{'、'.join(sorted(codes))}）{why}，"
                                                        "请只保留一个或直接写明要研究哪一只"))
+            elif not codes and len(name_hits) > 1:
+                names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
+                say(f"问题里点名了多家已跟踪公司（{names}），无法确定研究哪一只")
+                upd.update(status="failed", error=safe(f"问题里点名了多家已跟踪公司（{names}），"
+                                                       "请写明 6 位代码或只保留一家"))
             elif len(loose) > 1:
                 say(f"问题里的数字被拆开且出现多个候选（{'、'.join(sorted(loose))}），未自动选择")
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码")
