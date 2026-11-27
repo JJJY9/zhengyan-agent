@@ -518,3 +518,59 @@ def test_sensitive_failure_error_has_no_digits(repo, policy):
     task = _run(repo, policy, "我的房贷余额600519元怎么办")
     assert task["status"] == "failed"
     assert "600519" not in (task.get("error") or "")
+
+def test_generic_company_words_not_evidence(repo, policy):
+    """通用行业词不构成模型码证据：银行板块/中国经济类问题不得被幻觉 ticker 过关。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("601398", company="工商银行"), "银行板块最近怎么走")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("601318", company="中国平安"), "中国经济怎么看")
+    assert task2["status"] == "failed" and task2["request"].get("ticker") is None
+
+
+def test_name_hits_priority_over_overlapping_evidence(repo, policy):
+    """问题点名已跟踪公司时本地档案名优先：即使模型公司名与问题有公共字也不采纳其代码。"""
+    repo.db.dossiers.insert_one({"key": "000001", "ticker": "000001", "name": "平安银行", "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run_llm(repo, policy, _EchoTickerLLM("601318", company="中国平安"), "平安银行最近怎么样")
+    assert task["request"]["ticker"] == "000001"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("模型给出 601318" in m for m in notes)
+
+
+def test_multi_code_with_tracked_name_fails_explicitly(repo, policy):
+    """多严格码 + 档案名共现：不得用名称兜底静默选定，仍按多个股票代码失败。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run(repo, policy, f"{NAME}、600519和000001比怎么样")
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "")
+    assert task["request"].get("ticker") is None
+
+
+def test_name_fallback_syncs_company_name(repo, policy):
+    """回退本地档案名时公司名同步为档案名（不再出现 600999 配模型自报『五粮液』）。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001", company="五粮液"), f"{NAME}最近怎么样")
+    assert task["request"]["ticker"] == CODE
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any(f"（{NAME}）" in m for m in notes)
+    assert not any("五粮液" in m for m in notes)
+
+
+def test_decimal_comma_full_code_list_pinned():
+    """'600519,300750元' 的取舍钉死：第一码保留为代码、第二码按金额候选（事件可见）。"""
+    kept, dropped = _codes_with_dropped("600519,300750元")
+    assert kept == {"600519"} and dropped == {"300750"}
+
+
+def test_small_decide_masks_multiline_amounts(repo, policy):
+    """small 决策调用只看整段脱敏文本：多行敏感问题里的数字不出域。"""
+    decision = FakeDecision()
+    deps = build_deps(repo, FakeLLM(), policy, source=FakeSource(), web_tools=FakeWebTools(), decision=decision)
+    svc = ResearchService(deps, InMemorySaver())
+    svc.start(ResearchRequest(question="我的持仓600519股，\n成本价30元，\n怎么办", as_of=as_of(), route="quick"),
+              background=False)
+    assert decision.calls
+    text = decision.calls[0]
+    assert "[已脱敏]" in text and "600519" not in text and "30" not in text.replace("[已脱敏]", "")

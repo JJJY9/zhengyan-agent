@@ -84,6 +84,7 @@ export function zh(text: string | null | undefined): string {
 // Unicode 数字（\p{Nd}，非 ASCII 数字紧邻时不算代码），代码内允许一个半角/全角空格。
 // 注：\p{Nd} 的具体码位随 JS 引擎的 Unicode 数据版本演进，与 Python \d 理论上可能有差异。
 const A_SHARE_CODE = /(?<![\p{Nd}])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![\p{Nd}])/u;
+const FULL_CODE = new RegExp("^(?:" + A_SHARE_CODE.source + ")$", "u");
 const UNIT_COMPOUND = ["万元", "亿元", "千元", "百万元", "千万元", "万手", "万股", "亿股", "万亿"];
 const MONEY_WORDS = ["美元", "港元", "港币", "人民币"];
 const UNIT_ALWAYS = "份块%％";
@@ -107,8 +108,11 @@ const unitAt = (s: string, k0: number): boolean => {
     || MONEY_WORDS.some((w) => rest.startsWith(w))) return true;
   const ch = rest.slice(0, 1);
   if (ch && UNIT_ALWAYS.includes(ch)) return true;
-  if (ch === "元") return !["器", "宇", "素"].includes(rest[1] ?? "");
-  if (ch === "手") return !isCjk(rest[1] ?? "");
+  if (ch === "元" || ch === "手") {
+    const nxt = s.slice(skipFmtOnly(s, k + 1), skipFmtOnly(s, k + 1) + 1);
+    if (ch === "手") return !isCjk(nxt);
+    return !["器", "宇", "素"].includes(nxt);
+  }
   if (ch && "万亿千".includes(ch) && (rest.length === 1 || !isCjk(rest[1] ?? ""))) return true;
   return false;
 };
@@ -138,6 +142,7 @@ function moneyTail(s: string, i: number): boolean {
   if (ch === "," || ch === "，") {
     const m = /^[,，]([0-9]+)/.exec(s.slice(j));
     if (!m) return false;
+    if (FULL_CODE.test(m[1])) return false;       // 逗号后本身是完整 A 股代码：代码列表
     const end = j + m[0].length;
     if (m[1].length > 2) return unitAt(s, end);   // 千分位/长小数：只有紧跟单位才算金额
     return digitsMoneyContext(s, end);

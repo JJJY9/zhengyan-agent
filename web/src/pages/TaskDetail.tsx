@@ -115,8 +115,7 @@ export default function TaskDetail() {
   // 历史任务 request.ticker 可能缺失：回退到已完成档案的 key（用户任务无命名空间前缀，含『:』时取后半段）
   const displayTicker = task.request.ticker ?? (task.result?.dossier_key ? task.result.dossier_key.split(":").pop()! : null);
   const inferredLabel = tickerInferred ? (redacted ? "（脱敏后推断）" : "（推断）")
-    : (!task.request.ticker && displayTicker && redacted && !hasAshareCode(task.request.question)
-        ? "（来自档案）" : "");
+    : (!task.request.ticker && displayTicker ? "（来自档案）" : "");
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
   const escalated = task.events?.some((e) => e.node === "quality_gate" && e.message.includes("升级"));
   const finalRouting = task.result?.routing ?? (escalated && routing ? { ...routing, route: "deep", escalated_from: "standard", source: "escalation" } as RouteDecision : routing);
