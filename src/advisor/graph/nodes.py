@@ -143,10 +143,11 @@ def _unit_at(s: str, k: int) -> bool:
     ch = rest[:1]
     if ch and ch in _UNIT_ALWAYS:
         return True
-    if ch == "元":
-        return rest[1:2] not in ("器", "宇", "素")
-    if ch == "手":
-        return not _is_cjk(rest[1:2])
+    if ch in "元手":
+        nxt = s[_next_fmt(s, k + 1):][:1]
+        if ch == "手":
+            return not _is_cjk(nxt)
+        return nxt not in ("器", "宇", "素")
     if ch and ch in "万亿千" and (len(rest) == 1 or not _is_cjk(rest[1:2])):
         return True
     return False
@@ -258,14 +259,23 @@ def _mask_six(text: str) -> str:
     return re.sub(r"\d{6,}", "[已脱敏]", text or "")
 
 
+_NAME_STOP_TAILS = ("银行", "科技", "证券", "股份", "集团", "控股", "国际", "中国", "能源",
+                    "电力", "医药", "实业", "投资", "发展", "产业", "板块")
+
+
 def _name_evidence(name: str, qn: str) -> bool:
-    """模型自报公司名与问题文本的弱匹配：全名包含或 ≥2 字公共片段（覆盖简称提问+全称返回）。"""
-    name = (name or "").strip()
-    if len(name) < 2:
+    """模型自报公司名与问题文本的弱匹配（防幻觉的弱证据门槛）：
+    全名包含，或 ≥3 字公共片段，或公司名尾简称（≥2 字）出现在问题里；
+    纯数字/纯标点与通用行业词尾（银行/科技/中国…）不作数，避免通用词为任意模型码背书。"""
+    name = re.sub(r"[\s\W_]+", "", name or "")
+    if len(name) < 2 or name.isdigit():
         return False
     if name in qn:
         return True
-    return any(name[i:i + 2] in qn for i in range(len(name) - 1))
+    if len(name) >= 3 and any(name[i:i + 3] in qn for i in range(len(name) - 2)):
+        return True
+    tail = name[-2:]
+    return tail not in _NAME_STOP_TAILS and tail in qn
 
 
 class Nodes:
@@ -369,8 +379,11 @@ class Nodes:
                 code, code_src = model_ticker, "model"
                 say(f"注意：按模型判断采用疑似金额的六位数 {model_ticker} 作为标的，请核对")
             elif not codes and _CODE.fullmatch(model_ticker):
-                # 无可见代码：模型码必须有本地依据（档案名/疑似金额/拆码/公司名弱匹配），否则不采纳
-                if model_ticker in name_hits:
+                # 无可见代码：本地档案名优先；其余模型码必须有本地依据（疑似金额/拆码/弱名称）
+                if name_hits and model_ticker not in name_hits:
+                    names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
+                    say(f"注意：问题点名的是 {names}，模型给出 {model_ticker}；将以本地档案名继续")
+                elif model_ticker in name_hits:
                     code, code_src = model_ticker, "name"
                     say(f"注意：按档案名推断标的 {model_ticker}，请核对")
                 elif model_ticker in dropped:
@@ -385,7 +398,7 @@ class Nodes:
             # 模型码被拒或不存在时的本地兜底（顺序独立，避免被 elif 链跳过）
             if code is None and len(codes) == 1:
                 code, code_src = next(iter(codes)), "code"
-            if code is None and name_code:
+            if code is None and not codes and name_code:
                 code, code_src = name_code, "name"
             if code is None and not codes and len(loose) == 1:
                 # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的。
@@ -412,8 +425,11 @@ class Nodes:
             say(f"注意：问题里{lead}疑似金额的六位数（未采用）：{'、'.join(sorted(stray))}")
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
+        company = out.company_name or ""
+        if code_src == "name" and code and known.get(code):
+            company = known[code]   # 回退本地档案名时同步公司名，避免与模型名错配
         upd = {
-            "ticker": code, "company_name": out.company_name or "", "intent": intent, "focus": out.focus,
+            "ticker": code, "company_name": company, "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
             # 预脱敏问题：后续所有提示词拼装都用它，证据区数字因此不会被问题区的命中波及
             "safe_question": self.guard.redact_question(q),
@@ -433,7 +449,7 @@ class Nodes:
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码")
             else:
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码")
-        say(f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
+        say(f"股票 {code or '未识别'}{'（' + company + '）' if company else ''}，"
             f"问题类型：{INTENT_LABEL.get(intent, intent)}" + ("；问题里含个人信息，已脱敏" if sensitive else ""))
         return upd
 
