@@ -84,15 +84,55 @@ export function zh(text: string | null | undefined): string {
 // Unicode 数字（\p{Nd}，非 ASCII 数字紧邻时不算代码），代码内允许一个半角/全角空格。
 // 注：\p{Nd} 的具体码位随 JS 引擎的 Unicode 数据版本演进，与 Python \d 理论上可能有差异。
 const A_SHARE_CODE = /(?<![\p{Nd}])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![\p{Nd}])/u;
+const UNIT_COMPOUND = ["万元", "亿元", "千元", "百万元", "千万元", "万手", "万股", "亿股", "万亿"];
+const MONEY_WORDS = ["美元", "港元", "港币", "人民币"];
+const UNIT_ALWAYS = "份块%％";
+const FORMAT_CHARS = "\u200b\u200c\u200d\ufeff";
+const MONEY_HEADS = "￥¥$€";
+const isCjk = (ch: string) => !!ch && ch >= "一" && ch <= "鿿";
+const skipFormat = (s: string, k: number) => {
+  while (k < s.length && (/\s/.test(s[k]) || FORMAT_CHARS.includes(s[k]))) k += 1;
+  return k;
+};
+/** 与后端 nodes._money_tail 同口径：小数/逗号小数、复合单位、币种、份/块/% 视为金额；
+ *  『手』后接汉字（手机/手续费）、『元』后接 器/宇/素（元器件/元宇宙）不算单位。 */
+function moneyTail(s: string, i: number): boolean {
+  const j = skipFormat(s, i);
+  if (j >= s.length) return false;
+  const ch = s[j];
+  if (ch === "." || ch === "．") return /[0-9]/.test(s[skipFormat(s, j + 1)] ?? "");
+  if (ch === "," || ch === "，") {
+    const m = /^[,，]([0-9]+)/.exec(s.slice(j));
+    return !!m && m[1].length >= 1 && m[1].length <= 2;
+  }
+  if (MONEY_WORDS.some((w) => s.startsWith(w, j)) || UNIT_COMPOUND.some((w) => s.startsWith(w, j))) return true;
+  if (UNIT_ALWAYS.includes(ch)) return true;
+  if (ch === "手") return !isCjk(s[j + 1] ?? "");
+  if (ch === "元") return !["器", "宇", "素"].includes(s[j + 1] ?? "");
+  return false;
+}
+function moneyHead(s: string, i: number): boolean {
+  let j = i - 1;
+  while (j >= 0 && (/\s/.test(s[j]) || FORMAT_CHARS.includes(s[j]))) j -= 1;
+  if (j >= 0 && MONEY_HEADS.includes(s[j])) return true;
+  return s.slice(0, j + 1).endsWith("人民币");
+}
 export function normDigits(q: string): string {
   return q.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 }
 export function ashareCodes(q: string): string[] {
+  const s = normDigits(q);
   const re = new RegExp(A_SHARE_CODE.source, "gu");
-  return (normDigits(q).match(re) ?? []).map((c) => c.replace(/\s+/g, ""));
+  const out: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    if (moneyTail(s, m.index + m[0].length) || moneyHead(s, m.index)) continue;
+    out.push(m[0].replace(/\s+/g, ""));
+  }
+  return out;
 }
 export function hasAshareCode(q: string): boolean {
-  return A_SHARE_CODE.test(normDigits(q));
+  return ashareCodes(q).length > 0;
 }
 /** 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用（财务数字 208448 万元不是代码）。
  *  公司名维度不在这里判定：R100a 审计的两条 important 证明前端按档案全名做仲裁会因简称/
