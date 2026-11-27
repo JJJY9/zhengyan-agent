@@ -109,7 +109,8 @@ class ResearchService:
             if request_doc["question"] != req.question:
                 request_doc["redacted"] = True     # 前端据此提示：被抹掉的数字重试无法恢复
             if request_doc.get("ticker"):
-                request_doc["ticker_source"] = "explicit"
+                # 重试会原样带回上游来源（loose/model 的推断标注不因重试而丢失）；默认视为显式
+                request_doc["ticker_source"] = req.ticker_source or "explicit"
             if not request_doc.get("ticker"):
                 # 脱敏后问题里的代码可能被遮蔽：落盘时就把解析结果写进请求（只存代码不存原文），
                 # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试。

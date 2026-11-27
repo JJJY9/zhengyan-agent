@@ -34,6 +34,7 @@ export default function TaskDetail() {
       const { task_id } = await api.research({
         question: task.request.question,
         ticker: task.request.ticker ?? undefined,
+        ticker_source: task.request.ticker_source ?? undefined,   // 重试保留来源：推断标注不因重试丢失
         as_of: task.request.as_of ?? undefined,
         route: task.request.route,
       });
@@ -104,7 +105,10 @@ export default function TaskDetail() {
     || (!task.request.ticker && !redacted && qCodes.length > 1);
   const tickerSrc = task.request.ticker_source;
   const tickerInferred = task.request.ticker
-    ? (tickerSrc ? tickerSrc === "loose" || tickerSrc === "model" : redacted && !hasAshareCode(task.request.question))
+    ? (tickerSrc
+        // 推断来源且问题文本里看不到该代码时才标注（明文可见的代码不标『推断』）
+        ? (tickerSrc === "loose" || tickerSrc === "model") && !qCodes.includes(task.request.ticker)
+        : redacted && !hasAshareCode(task.request.question))
     : false;
   // 历史任务 request.ticker 可能缺失：回退到已完成档案的 key（用户任务无命名空间前缀，含『:』时取后半段）
   const displayTicker = task.request.ticker ?? (task.result?.dossier_key ? task.result.dossier_key.split(":").pop()! : null);

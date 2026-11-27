@@ -48,7 +48,7 @@ export const api = {
   login: (user: string, password: string) =>
     req<{ ok: boolean }>("/api/login", { method: "POST", body: JSON.stringify({ user, password }) }),
   logout: () => req<{ ok: boolean }>("/api/logout", { method: "POST" }),
-  research: (body: { question: string; ticker?: string; as_of?: string; route: string }) =>
+  research: (body: { question: string; ticker?: string; ticker_source?: string; as_of?: string; route: string }) =>
     req<{ task_id: string }>("/api/research", { method: "POST", body: JSON.stringify(body) }),
   task: (id: string) => req<Task>(`/api/tasks/${id}`),
   tasks: () => req<Task[]>("/api/tasks"),
