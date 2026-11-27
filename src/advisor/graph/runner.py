@@ -106,6 +106,8 @@ class ResearchService:
             # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
             request_doc = req.model_dump(mode="json")
             request_doc["question"] = self.guard.redact_question(req.question)
+            if request_doc["question"] != req.question:
+                request_doc["redacted"] = True     # 前端据此提示：被抹掉的数字重试无法恢复
             if not request_doc.get("ticker"):
                 # 脱敏后问题里的代码可能被遮蔽：落盘时就把解析结果写进请求（只存代码不存原文），
                 # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试。

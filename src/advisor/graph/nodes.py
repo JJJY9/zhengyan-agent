@@ -30,7 +30,26 @@ _CODE_SPACED = re.compile(r"(?<!\d)([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[
 _FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 _DIGIT_TOKEN = re.compile(r"[0-9]+")
 _LOOSE_SEP_GAP = re.compile(r"[\s​-‍﻿\-–—－~·•]+")
-_UNIT_TAIL = "元万亿%％"
+_UNIT_TAIL = "元万亿千%％手份块"
+_MONEY_WORDS = ("美元", "港元", "港币", "人民币")
+_FORMAT_CHARS = "\u200b\u200c\u200d\ufeff"
+
+
+def _money_tail(s: str, i: int) -> bool:
+    """匹配结束后的下一个有效字符是否表明这是金额/数量而不是代码：
+    跳过空白与零宽/格式字符；小数（.或．后跟数字）、金额/数量单位（元万亿千/%/手/份/块、
+    美元/港元/港币/人民币）都算。'股' 仍是确定性例外（'我持有600519股' 视为标的）。"""
+    j = i
+    while j < len(s) and (s[j].isspace() or s[j] in _FORMAT_CHARS):
+        j += 1
+    if j >= len(s):
+        return False
+    ch = s[j]
+    if ch in ".．" and j + 1 < len(s) and s[j + 1].isdigit():
+        return True
+    if ch in _UNIT_TAIL:
+        return True
+    return any(s.startswith(w, j) for w in _MONEY_WORDS)
 
 
 def _norm_digits(text: str) -> str:
@@ -44,32 +63,45 @@ def _norm_code(text: str) -> str:
 
 
 def _codes_of(text: str) -> set[str]:
-    """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。"""
-    return {_norm_code(m.group(1)) for m in _CODE_SPACED.finditer(text or "")}
+    """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。
+    六位数金额/小数（'600519.23元'、'600 519 万元'、'600519美元'）不是标的，按尾随上下文排除。"""
+    s = text or ""
+    out: set[str] = set()
+    for m in _CODE_SPACED.finditer(s):
+        if _money_tail(s, m.end()):
+            continue
+        out.add(_norm_code(m.group(1)))
+    return out
 
 
 def _codes_of_loose(text: str) -> set[str]:
     """敏感问题的兜底解析：相邻两个数字片段只由空白/全角空格/零宽/连字符等分隔、
-    拼接后恰为合法代码、且后面不跟金额/百分比单位（元/万/亿/%）时视为标的。
+    拼接后恰为合法代码、且尾随上下文不是金额/小数（与 _money_tail 同口径）时视为标的。
     不做整串合并——那样会把日期对（2024-12-31 / 2025-01-02）或股数粘成假代码；
-    '我600\xa0519股' 能找回，'我的房贷余额600\xa0519元' 不会把余额当标的。"""
+    '我600\xa0519股' 能找回，'我的房贷余额600\xa0519元' / '我房贷 300\n750 元' 不会把余额当标的。"""
     s = _norm_digits(text or "")
     toks = [(m.start(), m.end()) for m in _DIGIT_TOKEN.finditer(s)]
-    date_seps = "-–—－/."
+    date_seps = "-–—－/．."
     out: set[str] = set()
     for (a1, a2), (b1, b2) in zip(toks, toks[1:]):
-        if not _LOOSE_SEP_GAP.fullmatch(s[a2:b1]):
+        gap = s[a2:b1]
+        if not _LOOSE_SEP_GAP.fullmatch(gap):
             continue
-        joined = s[a1:a2] + s[b1:b2]
-        if not _CODE.fullmatch(joined):
+        join = s[a1:a2] + s[b1:b2]
+        if not _CODE.fullmatch(join):
             continue
-        tail = s[b2:b2 + 1]
-        if tail and tail in _UNIT_TAIL:
+        # 拆分形态：常规 3+3；允许 2+4/4+2（92 段代码），连字符分隔只认 3+3（'03-2025' 是月-年）
+        split = (a2 - a1, b2 - b1)
+        hyphen = any(ch in gap for ch in "-–—－")
+        if split not in ((3, 3), (2, 4), (4, 2)) or (hyphen and split != (3, 3)):
             continue
-        # 日期片段不是标的：'2024-12-31\n2025-01-02' 的 31+2025 不能拼成 312025
-        if (a1 and s[a1 - 1] in date_seps) or (tail and tail in date_seps):
-            continue
-        out.add(joined)
+        if (a1 and s[a1 - 1].isdigit()) or (b2 < len(s) and s[b2].isdigit()):
+            continue                     # 邻接（含非 ASCII）数字：不是独立代码
+        if (a1 and s[a1 - 1] in date_seps) or (b2 < len(s) and s[b2] in date_seps):
+            continue                     # 日期片段：'2024-12-31\n2025-01-02' 的 31+2025 不能拼成 312025
+        if _money_tail(s, b2):
+            continue                     # 金额/小数：'300\n750 元'、'600\xa0519 美元'
+        out.add(join)
     return out
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
@@ -154,12 +186,13 @@ class Nodes:
         explicit = state.get("ticker")
         codes = _codes_of(qn)
         sensitive_hit = bool(self.guard.find_sensitive(q))
-        # 宽松拆码只作为最后的兜底候选：不并入 codes，不参与模型/名称的优先级
-        # （错把房贷余额/日期对当代码会静默研究错公司）
-        loose = _codes_of_loose(q) if (not codes and sensitive_hit) else set()
+        # 宽松拆码只作为最后的兜底候选：不并入 codes，不参与模型/名称的优先级；
+        # 敏感问题下始终计算（即使已有严格码），仅用于冲突可见性与多候选提示。
+        loose = _codes_of_loose(q) if sensitive_hit else set()
         code = explicit or (next(iter(codes)) if len(codes) == 1 else None)   # 多个代码不硬猜，交给模型/澄清
         known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
-        name_code = next((t for t, n in known.items() if n and n in qn), None)   # 名字先本地解析，脱敏后模型看不到也能识别
+        name_hits = {t for t, n in known.items() if n and n in qn}   # 名字先本地解析，脱敏后模型看不到也能识别
+        name_code = next((t for t, n in known.items() if n and n in qn), None)
         out = None
         if self.d.policy.intake.get("classifier", "llm") == "small" and h.decision_client is not None:
             try:
@@ -191,13 +224,18 @@ class Nodes:
                 # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的
                 code = next(iter(loose))
                 self._event(state, "intake", f"问题中的数字已被脱敏；从拆分数字中识别到标的 {code}，将以它继续（审批时可拒绝）")
-        if explicit and name_code and name_code != explicit:
-            # 页面/请求指定的标的与问题点名的公司不一致：即使 small 分类器路径也要可见
-            self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里点名的是 "
-                                         f"{known.get(name_code) or ''}（{name_code}），将按指定标的继续")
-        if explicit and len(loose) == 1 and next(iter(loose)) != explicit:
-            self._event(state, "intake", f"注意：问题中被脱敏的数字里包含标的 {next(iter(loose))}，"
-                                         f"将按指定标的 {explicit} 继续")
+        if explicit:
+            if codes and explicit not in codes:
+                self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里出现代码 "
+                                             f"{'、'.join(sorted(codes))}，将按指定标的继续")
+            elif name_hits and explicit not in name_hits:
+                names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
+                self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里点名的是 {names}，将按指定标的继续")
+            if len(loose) == 1 and next(iter(loose)) != explicit:
+                self._event(state, "intake", f"注意：问题中被脱敏的数字里包含标的 {next(iter(loose))}，"
+                                             f"将按指定标的 {explicit} 继续")
+        elif code and len(loose) == 1 and next(iter(loose)) != code:
+            self._event(state, "intake", f"注意：问题中还出现拆码候选 {next(iter(loose))}，未采用（将按 {code} 继续）")
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
         upd = {
@@ -213,6 +251,9 @@ class Nodes:
             if len(codes) > 1:
                 upd.update(status="failed", error=f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
                                                    "请只保留一个或直接写明要研究哪一只")
+            elif len(loose) > 1:
+                self._event(state, "intake", f"问题里的数字被拆开且出现多个候选（{'、'.join(sorted(loose))}），未自动选择")
+                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
             else:
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
         self._event(state, "intake", f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
