@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../api";
-import { ashareCodes, nodeLabel, ROUTE_LABEL, today } from "../format";
+import { nodeLabel, resolveSubmitTicker, ROUTE_LABEL, today } from "../format";
 import type { Evidence, Task, WatchRow } from "../types";
 import EvidenceCard from "./EvidenceCard";
 import {
@@ -363,16 +363,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
 
   const submit = useCallback(async (question: string, route: string, as_of: string, ticker?: string) => {
-    // 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用；财务数字（208448 万元）不是代码。
-    // 判定与后端 nodes._codes_of 同口径（全角数字归一、允许代码内一个空白），否则 '600 519'
-    // 这类后端能解析的写法会让页面 ticker 静默覆盖点名股票。
-    const codes = ashareCodes(question);
-    const t = ticker && !codes.some((c) => c !== ticker) ? ticker : undefined;
+    // 页面附带的 ticker 只在问题没有点名其它标的时使用：其它 A 股代码、其它已跟踪公司名都算改问；
+    // 财务数字（208448 万元）不是代码。判定与后端 nodes._CODE_SPACED 同口径。
+    const t = resolveSubmitTicker(question, ticker, watch);
     const { task_id } = await api.research({ question, route, as_of, ticker: t });
     setTurns((ts) => [...ts, { task_id, question, route, as_of, ts: Date.now() }]);
     setAskOpen(true);
     refresh();
-  }, [refresh]);
+  }, [refresh, watch]);
 
   const apiValue = useMemo<ShellApi>(() => ({
     setAskContext: setCtx,

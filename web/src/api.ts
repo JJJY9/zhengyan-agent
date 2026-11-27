@@ -4,7 +4,7 @@ const FIELD_LABEL: Record<string, string> = {
   name: "名称", thesis: "策略逻辑", universe: "候选股票", entry: "纳入条件", exit: "移出条件",
   max_positions: "最多持有", stop_loss_pct: "止损 %", max_drawdown_limit: "晋级回撤上限 %",
   change_reason: "改动理由", question: "问题", ticker: "股票代码", as_of: "数据截至", routes: "评测方式",
-  holdings: "持仓", risk: "风险设置", max_drawdown_pct: "最大回撤上限 %",
+  holdings: "持仓", risk: "风险设置", max_drawdown_pct: "最大回撤上限 %", horizon_months: "期限（月）",
 };
 // 同名字段在不同端点语义不同（Profile 的 holdings[].thesis 是「购买 / 关注理由」，策略卡的 thesis 才是「策略逻辑」）
 const PATH_FIELD_LABEL: Array<[string, Record<string, string>]> = [
