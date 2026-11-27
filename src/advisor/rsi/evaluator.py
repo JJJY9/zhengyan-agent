@@ -263,12 +263,19 @@ def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
 def _cached_searches(repo) -> list[dict]:
     from advisor.rsi.issues import _search_key_parts
     out = []
+    seen: set[str] = set()
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0}):
         parsed = _search_key_parts(doc["key"])
         if parsed is None or parsed[0] != "user":
             continue                       # 评测数据不能冻结进 S3 回放协议
-        _, as_of, query = parsed
-        out.append({"id": _h(doc["key"])[:12], "as_of": as_of, "query": query, "raw": doc["value"] or []})
+        _, as_of, count, query = parsed
+        raw = doc["value"] or []
+        # 回放 id 按历史键格式计算（与升级前的冻结签名一致）；历史键与 scope 键并存时折叠为同一样本
+        sid = _h(f"ds:search:{as_of}:{count}:{query}")[:12]
+        if sid in seen:
+            continue
+        seen.add(sid)
+        out.append({"id": sid, "as_of": as_of, "query": query, "raw": raw})
     return out
 
 
@@ -386,7 +393,8 @@ def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: 
     replay_f = search_f(slices["replay"], full, deps.policy)["f"] if slices["replay"] else None
     h = deps.harness(f"rsi-{run.run_id}", "standard", date.today(),
                      Budget(limits={"tokens": 1_000_000, "search_calls": 400, "wall_clock_s": 3600}),
-                     node="rsi_eval", principal="evaluator")
+                     node="rsi_eval", principal="evaluator",
+                     namespace=f"rsi-eval-{run.run_id}")   # 评测搜索不写用户命名空间
     arms: dict[str, dict] = {}
     for arm, cfg in (("base", base), ("cand", cand)):
         hint = cfg.get("expert_hints", {}).get(expert) or run.diff["hint"]["old"]

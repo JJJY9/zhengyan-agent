@@ -4,6 +4,7 @@
 - 晋级只能由人批准（单人阶段如实标「自批」）；同一张卡只有一个已晋级版本；
 - 回滚：当前已晋级版本标为已回滚，上一个晋级过的版本重新生效。
 """
+import re
 from datetime import date, datetime, timezone
 from typing import Callable
 
@@ -53,6 +54,11 @@ class StrategyBook:
 
     # ---------- 新建 / 修订 ----------
     def create(self, spec: StrategySpec, actor: str, change_reason: str, card_id: str | None = None) -> StrategyVersion:
+        # 候选股票只接受用户档案的 6 位代码：评测命名空间 key 不能进入用户策略卡（写路径校验，
+        # 读库的历史脏数据保持可读，避免整页 500）
+        bad = [k for k in spec.universe if not re.fullmatch(r"[0-9]{6}", k)]
+        if bad:
+            raise StrategyError(f"候选股票必须是不带命名空间的 6 位代码：{bad[:3]}")
         sha = spec_hash(spec)
         v = None
         for _ in range(3):

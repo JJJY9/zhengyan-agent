@@ -79,6 +79,7 @@ class DeepNodes(Nodes):
                 "question": state.get("safe_question") or state["question"],
                 "shared": shared, "allocation": alloc, "started_at": budget.started_at, "paused_s": budget.paused_s,
                 "rsi_search": rsi_search, "rsi_lessons": rsi_lessons,   # 任务级 RSI 快照：专家不实时读在用版本
+                "namespace": state.get("namespace", ""),                # 评测深研的专家搜索不能写用户缓存
             }))
         return sends
 

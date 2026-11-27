@@ -96,6 +96,8 @@ class ResearchService:
         if getattr(self.deps.llm, "configured", True) is False:   # 没配 Key 就不开工，免得白白取数后才失败
             from advisor.llm import LLMNotConfigured
             raise LLMNotConfigured("未配置 DEEPSEEK_API_KEY，不能发起新研究：请在 .env 中填写后重启服务（已有档案仍可浏览）")
+        if admission != "interactive" and background:
+            raise ValueError("admission='side' 只支持前台执行：评测用例在侧栏线程内联运行")
         guarded = admission == "interactive"
         if guarded:
             self._acquire_or_raise()
@@ -123,6 +125,8 @@ class ResearchService:
         task = self.deps.repo.get_task(task_id)
         if not task or task["status"] != "waiting_approval":
             raise ValueError("任务不在等待确认状态")
+        if admission != "interactive" and background:
+            raise ValueError("admission='side' 只支持前台执行：评测用例在侧栏线程内联运行")
         ticket = task.get("interrupt") or {}
         reason = ""
         if ticket.get("ttl_s") and time.time() - ticket.get("issued_at", 0) > ticket["ttl_s"]:

@@ -136,8 +136,12 @@ def run_expert(deps, p: dict) -> dict:
     as_of = date.fromisoformat(p["as_of"])
     started = time.time()
     budget = Budget(limits=p["allocation"], started_at=p["started_at"], paused_s=float(p.get("paused_s", 0.0)))
+    namespace = p.get("namespace")
+    if namespace is None:                  # 旧检查点/在飞任务没带 namespace：从任务文档兜底
+        task = deps.repo.get_task(p["task_id"]) or {}
+        namespace = (task.get("request") or {}).get("namespace") or ""
     h = deps.harness(p["task_id"], p["route"], as_of, budget, node=f"expert:{spec.key}", principal=spec.key,
-                     task_scoped_cache=True)
+                     task_scoped_cache=True, namespace=namespace)
     result = ExpertResult(expert=spec.key, name=spec.name, model_role=role, brief=p["questions"])
     shared = [EvidenceCard.model_validate(c) for c in p["shared"].values()]
     own: list[EvidenceCard] = []
