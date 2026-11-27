@@ -95,13 +95,15 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                 try:
                     req = ResearchRequest(question=case["question"], ticker=case.get("ticker"), route=route,
                                           as_of=date.fromisoformat(case["as_of"]) if case.get("as_of") else None)
-                    tid = svc.start(req, background=False, namespace=f"eval-{run_id}-{route}")
+                    tid = svc.start(req, background=False, namespace=f"eval-{run_id}-{route}",
+                                    admission="side")     # 评测用例不占交互研究名额
                     entry["task_id"] = tid
                     task = repo.get_task(tid)
                     if task["status"] == "waiting_approval":
                         # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续
                         entry["auto_approved"] = True
-                        (getattr(svc, "research", None) or svc).resume(tid, True, background=False)
+                        (getattr(svc, "research", None) or svc).resume(tid, True, background=False,
+                                                                       admission="side")
                         task = repo.get_task(tid)
                     if task["status"] == "done":
                         d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])

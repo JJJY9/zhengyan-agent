@@ -121,6 +121,24 @@ def host_of(url: str) -> str:
     return host.removeprefix("www.")
 
 
+_SEARCH_KEY_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def _search_key_parts(key: str) -> tuple[str, str, str] | None:
+    """解析 ds:search 缓存键 → (scope, as_of, query)。
+
+    新格式 ds:search:<scope>:<as_of>:<count>:<query>；历史格式 ds:search:<as_of>:<count>:<query>
+    视为用户命名空间（scope="user"）。"""
+    parts = key.split(":", 5)
+    if (len(parts) >= 6 and parts[0] == "ds" and parts[1] == "search"
+            and _SEARCH_KEY_DATE.fullmatch(parts[3]) and not _SEARCH_KEY_DATE.fullmatch(parts[2])):
+        return parts[2], parts[3], parts[5]
+    parts = key.split(":", 4)
+    if len(parts) == 5 and parts[0] == "ds" and parts[1] == "search" and _SEARCH_KEY_DATE.fullmatch(parts[2]):
+        return "user", parts[2], parts[4]
+    return None
+
+
 def cached_results(repo) -> dict[str, list[dict]]:
     """缓存的原始搜索结果，按原始搜索词归并（缓存键里的搜索词带了时点与站点排除后缀）。
 
@@ -128,7 +146,10 @@ def cached_results(repo) -> dict[str, list[dict]]:
     """
     out: dict[str, list[dict]] = {}
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0, "key": 1, "value": 1}):
-        _, _, as_of, _, query = doc["key"].split(":", 4)
+        parsed = _search_key_parts(doc["key"])
+        if parsed is None or parsed[0] != "user":
+            continue                       # 评测命名空间的搜索结果不进入用户坏案例/统计
+        _, as_of, query = parsed
         q = _QUERY_SUFFIX.split(query)[0].strip()
         rows = [{**r, "_cache_as_of": as_of} for r in doc.get("value") or []]
         out.setdefault(q, []).extend(r for r in rows if not _after_as_of(r))

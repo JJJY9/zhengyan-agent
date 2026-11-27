@@ -1,4 +1,6 @@
 """三期：用户确认档案与个人情境官。写入只有一条路径：用户在界面上明确确认。"""
+import re
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -35,6 +37,8 @@ class FitOut(BaseModel):
 @router.get("/fit/{ticker}", response_model=FitOut)
 def fit(ticker: str, svc: Svc):
     """个人情境官：把最新档案对照你确认过的约束。纯本地规则，不调用模型。"""
+    if not re.fullmatch(r"[0-9]{6}", ticker):     # 评测命名空间档案不做个人情境对照
+        raise HTTPException(404, "档案不存在")
     d = svc.deps.repo.current_dossier(ticker)
     if d is None:
         raise HTTPException(404, "档案不存在")

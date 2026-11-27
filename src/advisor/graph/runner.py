@@ -92,11 +92,13 @@ class ResearchService:
             self._release()
 
     def start(self, req: ResearchRequest, background: bool = True, namespace: str | None = None,
-              review_focus: list[str] | None = None) -> str:
+              review_focus: list[str] | None = None, admission: str = "interactive") -> str:
         if getattr(self.deps.llm, "configured", True) is False:   # 没配 Key 就不开工，免得白白取数后才失败
             from advisor.llm import LLMNotConfigured
             raise LLMNotConfigured("未配置 DEEPSEEK_API_KEY，不能发起新研究：请在 .env 中填写后重启服务（已有档案仍可浏览）")
-        self._acquire_or_raise()
+        guarded = admission == "interactive"
+        if guarded:
+            self._acquire_or_raise()
         try:
             task_id = "t_" + uuid.uuid4().hex[:10]
             # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
@@ -109,13 +111,15 @@ class ResearchService:
                 "as_of": (req.as_of or date.today()).isoformat(), "route_requested": req.route,
                 "review_focus": review_focus or [],
             }
-            self._submit(task_id, payload, background)
+            self._submit(task_id, payload, background, guarded=guarded)
         except Exception:
-            self._release()          # 提交没成功：把名额还回去
+            if guarded:
+                self._release()      # 提交没成功：把名额还回去
             raise
         return task_id
 
-    def resume(self, task_id: str, approve: bool, background: bool = True) -> None:
+    def resume(self, task_id: str, approve: bool, background: bool = True,
+               admission: str = "interactive") -> None:
         task = self.deps.repo.get_task(task_id)
         if not task or task["status"] != "waiting_approval":
             raise ValueError("任务不在等待确认状态")
@@ -123,7 +127,9 @@ class ResearchService:
         reason = ""
         if ticket.get("ttl_s") and time.time() - ticket.get("issued_at", 0) > ticket["ttl_s"]:
             approve, reason = False, "审批已过期"
-        self._acquire_or_raise()
+        guarded = admission == "interactive"
+        if guarded:
+            self._acquire_or_raise()
         try:
             # 原子夺取「待审批 → 运行中」：并发双击/客户端重试只有一次真正恢复，
             # 否则同一 thread 会被提交两次 Command(resume)，主席与提交节点重放、生成两份档案
@@ -136,9 +142,11 @@ class ResearchService:
                 self.deps.repo.add_paused_time(task_id, max(time.time() - issued, 0.0))
             self.deps.repo.push_event(task_id, "approval", f"{'同意' if approve else '拒绝'}{('（' + reason + '）') if reason else ''}")
             decision = {**ticket, "approve": approve, "reason": reason}
-            self._submit(task_id, Command(resume=self._resume_payload(task_id, ticket, decision)), background)
+            self._submit(task_id, Command(resume=self._resume_payload(task_id, ticket, decision)), background,
+                         guarded=guarded)
         except Exception:
-            self._release()          # 提交没成功：把名额还回去
+            if guarded:
+                self._release()      # 提交没成功：把名额还回去
             raise
 
     def _resume_payload(self, task_id: str, ticket: dict, decision: dict) -> dict:
@@ -196,8 +204,15 @@ class ResearchService:
             with self._side_gate:
                 self._side_pending = max(self._side_pending - 1, 0)
 
-    def _submit(self, task_id: str, payload: Any, background: bool) -> None:
-        """调用前必须已 _acquire_or_raise()；名额由 _guarded 在作业结束时释放。"""
+    def _submit(self, task_id: str, payload: Any, background: bool, guarded: bool = True) -> None:
+        """guarded=True（交互研究）时调用前必须已 _acquire_or_raise()；评测用例（admission="side"）
+        不占交互名额、由侧栏作业自身的 worker 串行执行，只走裸 _run。"""
+        if not guarded:
+            if background:
+                self._pool.submit(self._run, task_id, payload)
+            else:
+                self._run(task_id, payload)
+            return
         if background:
             fut = self._pool.submit(self._guarded, self._run, task_id, payload)
             with self._fut_lock:

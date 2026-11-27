@@ -57,10 +57,11 @@ class Deps:
             return flight
 
     def harness(self, task_id: str, route: str, as_of, budget: Budget, node: str = "", principal: str = "researcher",
-                task_scoped_cache: bool = False) -> Harness:
+                task_scoped_cache: bool = False, namespace: str = "") -> Harness:
         return Harness(
             policy=self.policy, registry=self.registry, audit=self.repo.append_audit, budget=budget,
             ctx=RunContext(task_id=task_id, route=route, as_of=as_of, node=node, principal=principal,
+                           namespace=namespace,
                            is_cancelled=lambda: self.repo.is_cancel_requested(task_id)),
             llm=self.llm, decision=self.decision,
             cache=self.task_cache(task_id) if task_scoped_cache else None,

@@ -4,6 +4,7 @@
 → 预算 → 幂等缓存 → 超时执行与有限重试 → 输出校验 → 审计（含 trace_id、节点）。
 任一安全关键检查异常时默认阻断。
 """
+import contextvars
 import hashlib
 import json
 import threading
@@ -16,6 +17,7 @@ from langgraph.errors import GraphInterrupt
 from pydantic import BaseModel, ValidationError
 
 from advisor.harness.budget import Budget
+from advisor.harness.context import current_namespace
 from advisor.harness.egress import EgressGuard
 from advisor.harness.errors import ApprovalRequired, BudgetExceeded, HarnessDenied, SkillFailed, TaskCancelled
 from advisor.harness.policy import Policy
@@ -63,6 +65,7 @@ class RunContext:
     as_of: date
     principal: str = "researcher"
     node: str = ""
+    namespace: str = ""          # 评测等隔离命名空间；空 = 用户任务
     is_cancelled: Callable[[], bool] = field(default=lambda: False)
 
 
@@ -220,7 +223,13 @@ class Harness:
                 self._charge(skill.spec.budget_kind)           # 每次真实调用都计费：重试不是免费的
             t0 = time.time()
             try:
-                out = _call_with_timeout(lambda: skill.run(inp), skill.spec.timeout_s)
+                # 技能在独立线程里执行：显式携带上下文，让技能读到任务命名空间（缓存 provenance）
+                token = current_namespace.set(self.ctx.namespace)
+                try:
+                    call_ctx = contextvars.copy_context()
+                    out = _call_with_timeout(lambda: call_ctx.run(skill.run, inp), skill.spec.timeout_s)
+                finally:
+                    current_namespace.reset(token)
             except _SkillTimeout:
                 last = SkillFailed(f"{skill.spec.name} 超时（{skill.spec.timeout_s}s）", retryable=True)
                 attempts.append({"n": attempt + 1, "status": "timeout", "error": str(last),
