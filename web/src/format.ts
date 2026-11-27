@@ -147,6 +147,11 @@ function moneyTail(s: string, i: number): boolean {
     if (m[1].length > 2) return unitAt(s, end);   // 千分位/长小数：只有紧跟单位才算金额
     return digitsMoneyContext(s, end);
   }
+  if ("-–—~～至到/／－−〜、".includes(ch)) {
+    // 区间金额：'434460至984元'、'360-500'；后一段本身是完整代码时按代码列表处理
+    const m2 = /^([0-9]+)/.exec(s.slice(skipFormat(s, j + 1)));
+    if (m2 && !FULL_CODE.test(m2[1])) return true;
+  }
   if (UNIT_COMPOUND.some((w) => s.startsWith(w, j))) return true;
   if (ch === "万" || ch === "亿" || ch === "千") {
     const k = skipFormat(s, j + 1);

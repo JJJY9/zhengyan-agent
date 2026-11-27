@@ -98,6 +98,11 @@ def _money_tail(s: str, i: int) -> bool:
         if len(m.group(1)) > 2:
             return _unit_at(s, end)   # 千分位/长小数：只有紧跟单位才算金额
         return _digits_money_context(s, end)
+    if ch in "-–—~～至到/／－−〜、":
+        # 区间金额：'434460至984元'、'360-500'；后一段本身是完整代码时按代码列表处理
+        m2 = re.match(r"([0-9]+)", s[_next_visible(s, j + 1):])
+        if m2 and not _CODE.fullmatch(m2.group(1)):
+            return True
     if any(s.startswith(w, j) for w in _UNIT_COMPOUND):
         return True                          # 复合单位在裸乘数之前判断（万亿/千万元/百万元）
     if ch in "万亿千":

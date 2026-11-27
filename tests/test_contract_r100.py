@@ -749,3 +749,13 @@ def test_zhonghang_alias_recall(repo, policy):
     task = _run_llm(repo, policy, _EchoTickerLLM("601988", company="中国银行"), "中行最近怎么样")
     assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
     assert task["request"]["ticker"] == "601988"
+
+
+def test_six_digit_ranges_are_money():
+    """R127a 性质测试挖出的缺口：六位数+区间（至/-/~/／）是金额——
+    此前 _money_tail 没有区间规则，'434460至984元' 会被当成代码。"""
+    assert _codes_of("434460至984元怎么配置") == set()
+    assert _codes_of("659497-190元怎么办") == set()
+    assert _codes_of("651928／440元") == set()
+    assert _codes_of("600519、300750哪个好") == {"600519", "300750"}   # 顿号后是完整代码：列表
+    assert _codes_of("600519-300750") == {"600519", "300750"}
