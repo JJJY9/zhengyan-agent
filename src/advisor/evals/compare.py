@@ -100,11 +100,17 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                     entry["task_id"] = tid
                     task = repo.get_task(tid)
                     if task["status"] == "waiting_approval":
-                        # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续
+                        # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续。
+                        # confirm 审批/多专家并行中断会多次进入待审批，必须循环批准到完成或有界放弃
                         entry["auto_approved"] = True
-                        (getattr(svc, "research", None) or svc).resume(tid, True, background=False,
-                                                                       admission="side")
-                        task = repo.get_task(tid)
+                        for _ in range(10):
+                            if task["status"] != "waiting_approval":
+                                break
+                            (getattr(svc, "research", None) or svc).resume(tid, True, background=False,
+                                                                           admission="side")
+                            task = repo.get_task(tid)
+                        if task["status"] == "waiting_approval":
+                            repo.request_cancel(tid)   # 超过上限：取消，错误可见
                     if task["status"] == "done":
                         d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])
                         ev = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}

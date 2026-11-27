@@ -131,3 +131,16 @@ def test_hint_eval_searches_use_isolated_scope(s3):
     scopes = {_search_key_parts(d["key"])[0] for d in deps.repo.db.cache.find({"key": {"$regex": "^ds:search:"}})}
     assert any(s.startswith("rsi-eval-") for s in scopes)         # 评测搜索带隔离 scope
     assert not any("公告原文" in q for q in cached_results(deps.repo))   # 评测查询不进用户坏案例
+
+
+def test_hint_repeats_are_independent_searches(s3):
+    """REPEATS 必须是真实独立外呼：每轮独立命名空间（否则噪声波动恒为 0，门控被架空）。"""
+    from advisor.rsi.issues import _search_key_parts
+
+    deps, runner = s3
+    run = runner.propose("S3")
+    runner.evaluate(run.run_id)
+    scopes = {_search_key_parts(d["key"])[0] for d in deps.repo.db.cache.find({"key": {"$regex": "^ds:search:"}})}
+    eval_scopes = {s for s in scopes if s.startswith("rsi-eval-")}
+    assert len(eval_scopes) >= 6                              # 2 臂 × 3 轮，各自独立命名空间
+    assert all(s.count("-") >= 3 for s in eval_scopes)        # 轮次后缀存在（arm-rep 维度）
