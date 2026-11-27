@@ -103,7 +103,12 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                         # 评测任务在隔离命名空间里，用户看不到也无法审批：评测内自动批准继续。
                         # confirm 审批/多专家并行中断会多次进入待审批，必须循环批准到完成或有界放弃
                         entry["auto_approved"] = True
-                        for _ in range(10):
+                        try:
+                            rp = svc.deps.policy.route(route)
+                            cap = 10 + int(rp.budget.get("search_calls", 0)) + int(rp.budget.get("fetch_calls", 0))
+                        except Exception:      # noqa: BLE001  精简桩没有 policy：保守放宽
+                            cap = 64
+                        for _ in range(cap):
                             if task["status"] != "waiting_approval":
                                 break
                             (getattr(svc, "research", None) or svc).resume(tid, True, background=False,
@@ -111,12 +116,14 @@ def run_compare(svc, cases: list[dict], routes: list[str], run_id: str | None = 
                             task = repo.get_task(tid)
                         if task["status"] == "waiting_approval":
                             repo.request_cancel(tid)   # 超过上限：取消，错误可见
+                            task = repo.get_task(tid) or task
+                            entry["error"] = "评测内自动批准超过上限，任务已取消（可重新发起）"
                     if task["status"] == "done":
                         d = repo.get_dossier(task["result"]["dossier_key"], task["result"]["version"])
                         ev = {c.id: c for c in repo.get_evidence(d.evidence_ids + [i for c in d.claims for i in c.evidence_ids])}
                         entry.update(dossier_key=d.key, version=d.version, metrics=dossier_metrics(d, ev, task))
                     else:
-                        entry["error"] = f"{task['status']}: {task.get('error')}"
+                        entry["error"] = entry.get("error") or f"{task['status']}: {task.get('error')}"
                 except Exception as e:  # noqa: BLE001  单例失败记录在案，不中断评测
                     entry["error"] = f"{type(e).__name__}: {e}"
                 run["results"].append(entry)
