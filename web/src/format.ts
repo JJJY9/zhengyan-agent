@@ -89,10 +89,14 @@ const MONEY_WORDS = ["美元", "港元", "港币", "人民币"];
 const UNIT_ALWAYS = "份块%％";
 const FORMAT_CHARS = "\u200b\u200c\u200d\ufeff";
 const MONEY_HEADS = "￥¥$€";
-const MONEY_STARTERS = "元万亿千%％手份块股美港人";
+const MONEY_STARTERS = "元万亿千%％手份块股百";
 const isCjk = (ch: string) => !!ch && ch >= "一" && ch <= "鿿";
 const skipFormat = (s: string, k: number) => {
   while (k < s.length && (/[\s\u001c-\u001f\u0085]/.test(s[k]) || FORMAT_CHARS.includes(s[k]))) k += 1;
+  return k;
+};
+const skipFmtOnly = (s: string, k: number) => {
+  while (k < s.length && FORMAT_CHARS.includes(s[k])) k += 1;
   return k;
 };
 const digitsMoneyContext = (s: string, k0: number): boolean => {
@@ -100,10 +104,12 @@ const digitsMoneyContext = (s: string, k0: number): boolean => {
   if (k >= s.length) return true;
   const ch = s[k];
   if (!isCjk(ch)) return true;
-  return MONEY_STARTERS.includes(ch);
+  if (MONEY_STARTERS.includes(ch)) return true;
+  return ["美元", "港元", "港币", "人民币"].some((w) => s.startsWith(w, k));
 };
-/** 与后端 nodes._money_tail 同口径：小数（句点/逗号后 1-2 位且后接金额语境）、复合单位/币种、
- *  裸万/亿/千仅在后接句末/标点/数字或单位时算；份/块/% 恒为数量；手/元 词首例外先跳过空白/零宽。 */
+/** 与后端 nodes._money_tail 同口径：复合单位（含万亿/千万元/百万元）先于裸乘数判断；
+ *  小数（1-2 位后接金额语境；多位数仅在紧跟金额单位时算）；份/块/% 恒为数量；
+ *  手/元 词首例外只跳过零宽字符（'手 机' 不是词）。 */
 function moneyTail(s: string, i: number): boolean {
   const j = skipFormat(s, i);
   if (j >= s.length) return false;
@@ -113,7 +119,7 @@ function moneyTail(s: string, i: number): boolean {
     const m = /^[0-9]+/.exec(s.slice(k));
     if (!m) return false;
     const after = k + m[0].length;
-    if (/^(元|万元|亿元|千元|美元|港元|港币|人民币)/.test(s.slice(after))) return true;
+    if (/^(元|万元|亿元|千元|百万元|美元|港元|港币|人民币)/.test(s.slice(skipFormat(s, after)))) return true;
     return m[0].length <= 2 && digitsMoneyContext(s, after);
   }
   if (ch === "," || ch === "，") {
@@ -121,15 +127,16 @@ function moneyTail(s: string, i: number): boolean {
     if (!m || m[1].length > 2) return false;
     return digitsMoneyContext(s, j + m[0].length);
   }
+  if (UNIT_COMPOUND.some((w) => s.startsWith(w, j))) return true;
   if (ch === "万" || ch === "亿" || ch === "千") {
     const k = skipFormat(s, j + 1);
     if (k >= s.length || !isCjk(s[k])) return true;
     return ["元", "美元", "港元", "港币", "人民币", "份", "手", "股"].some((w) => s.startsWith(w, k));
   }
-  if (MONEY_WORDS.some((w) => s.startsWith(w, j)) || UNIT_COMPOUND.some((w) => s.startsWith(w, j))) return true;
+  if (MONEY_WORDS.some((w) => s.startsWith(w, j))) return true;
   if (UNIT_ALWAYS.includes(ch)) return true;
   if (ch === "手" || ch === "元") {
-    const nxt = s.slice(skipFormat(s, j + 1), skipFormat(s, j + 1) + 1);
+    const nxt = s.slice(skipFmtOnly(s, j + 1), skipFmtOnly(s, j + 1) + 1);
     if (ch === "手") return !isCjk(nxt);
     return !["器", "宇", "素"].includes(nxt);
   }
@@ -141,8 +148,8 @@ function moneyHead(s: string, i: number): boolean {
   if (j >= 0 && MONEY_HEADS.includes(s[j])) return true;
   const start = j + 1 - 3;
   if (start >= 0 && s.slice(start, j + 1) === "人民币") {
-    const before = start - 1 >= 0 ? s[start - 1] : "";
-    return !(before && isCjk(before));
+    const before = s.slice(0, start);
+    return !["数字", "离岸", "在岸", "跨境"].some((w) => before.endsWith(w));
   }
   return false;
 }

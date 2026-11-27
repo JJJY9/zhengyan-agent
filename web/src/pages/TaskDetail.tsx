@@ -104,12 +104,15 @@ export default function TaskDetail() {
   const multiIssue = (task.error ?? "").includes("多个股票代码")
     || (!task.request.ticker && !redacted && qCodes.length > 1);
   const tickerSrc = task.request.ticker_source;
+  // 字面可见：问题原文（去代码内空格后）含该数字即为可见（含被金额守卫排除的候选）
+  const rawVisible = (t: string) =>
+    task.request.question.replace(/[ 　]/g, "").includes(t) || task.request.question.includes(t);
   const tickerInferred = task.request.ticker
     ? (tickerSrc
-        // 推断来源且问题文本里看不到该代码时才标注（明文可见的代码不标『推断』）
-        ? (tickerSrc === "loose" || tickerSrc === "model") && !qCodes.includes(task.request.ticker)
+        ? (tickerSrc === "loose" || tickerSrc === "model") && !rawVisible(task.request.ticker)
         : redacted && !hasAshareCode(task.request.question))
     : false;
+  const inferredLabel = tickerInferred ? (redacted ? "（脱敏后推断）" : "（推断）") : "";
   // 历史任务 request.ticker 可能缺失：回退到已完成档案的 key（用户任务无命名空间前缀，含『:』时取后半段）
   const displayTicker = task.request.ticker ?? (task.result?.dossier_key ? task.result.dossier_key.split(":").pop()! : null);
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
@@ -133,7 +136,7 @@ export default function TaskDetail() {
       <div className="card">
         <div className="kv"><span>问题</span><b>{task.request.question}</b></div>
         <div className="kv"><span>标的</span>{displayTicker
-          ? <b>{displayTicker}{tickerInferred ? "（脱敏后推断）" : ""}</b>
+          ? <b>{displayTicker}{inferredLabel}</b>
           : <span className="muted">未识别</span>}</div>
         <div className="kv"><span>数据截至</span>{task.request.as_of ? `${task.request.as_of}（只用这天及之前公开的信息）` : "今天（使用最新可得的信息）"}</div>
         <div className="kv"><span>研究方式</span>{task.request.route === "auto" ? "由系统根据问题自动选择" : `${ROUTE_LABEL[task.request.route]}（你指定的）`}</div>

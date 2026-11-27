@@ -35,7 +35,7 @@ _MONEY_WORDS = ("美元", "港元", "港币", "人民币")
 _UNIT_ALWAYS = "份块%％"
 _FORMAT_CHARS = "\u200b\u200c\u200d\ufeff"
 _MONEY_HEADS = "￥¥$€"
-_MONEY_STARTERS = "元万亿千%％手份块股美港人"
+_MONEY_STARTERS = "元万亿千%％手份块股百"
 
 
 def _is_cjk(ch: str) -> bool:
@@ -48,23 +48,33 @@ def _next_visible(s: str, j: int) -> int:
     return j
 
 
+def _next_fmt(s: str, j: int) -> int:
+    """只跳过零宽/格式字符（不跳普通空白）：'手\\u200b机' 是词，'手 机' 不当作词。"""
+    while j < len(s) and s[j] in _FORMAT_CHARS:
+        j += 1
+    return j
+
+
 def _digits_money_context(s: str, k: int) -> bool:
     """数字串之后的上下文是否金额化：句末/空白/数字/标点/非汉字符，或金额单位词首
-    （元/万/亿/千/%/手/份/块/股/美元/港元/人民币）。'23年'、'2季度' 不算。"""
+    （元/万/亿/千/百/%/手/份/块/股、美元/港元/港币/人民币）。'23年'、'2季度'、'23人生' 不算。"""
     k = _next_visible(s, k)
     if k >= len(s):
         return True
     ch = s[k]
     if not _is_cjk(ch):
         return True
-    return ch in _MONEY_STARTERS
+    if ch in _MONEY_STARTERS:
+        return True
+    return any(s.startswith(w, k) for w in ("美元", "港元", "港币", "人民币"))
 
 
 def _money_tail(s: str, i: int) -> bool:
     """匹配结束后的上下文是否表明这是金额/数量而不是代码：
     小数（句点/逗号后 1-2 位且后接金额语境；句点后多位数仅在紧跟金额单位时算）；
-    复合单位/币种恒算；万/亿/千后接句末/标点/数字或 元/币种/份手股 才算是金额
-    （'万科A' 不受影响）；份/块/% 恒为数量；手/元 的词首例外会先跳过空白与零宽字符。"""
+    复合单位（含 万亿/千万元/百万元）与币种恒算；裸 万/亿/千 后接句末/标点/数字或
+    元/币种/份手股 才算金额（'万科A' 不受影响）；份/块/% 恒为数量；
+    手/元 的词首例外只跳过零宽字符（'手 机' 不是词）。"""
     j = _next_visible(s, i)
     if j >= len(s):
         return False
@@ -75,7 +85,7 @@ def _money_tail(s: str, i: int) -> bool:
         if not m:
             return False
         after = k + m.end()
-        if re.match(r"(元|万元|亿元|千元|美元|港元|港币|人民币)", s[after:]):
+        if re.match(r"(元|万元|亿元|千元|百万元|美元|港元|港币|人民币)", s[_next_visible(s, after):]):
             return True
         return len(m.group()) <= 2 and _digits_money_context(s, after)
     if ch in ",，":
@@ -83,17 +93,19 @@ def _money_tail(s: str, i: int) -> bool:
         if not m or len(m.group(1)) > 2:
             return False
         return _digits_money_context(s, j + m.end())
+    if any(s.startswith(w, j) for w in _UNIT_COMPOUND):
+        return True                          # 复合单位在裸乘数之前判断（万亿/千万元/百万元）
     if ch in "万亿千":
         k = _next_visible(s, j + 1)
         if k >= len(s) or not _is_cjk(s[k]):
             return True
         return s.startswith(("元", "美元", "港元", "港币", "人民币", "份", "手", "股"), k)
-    if any(s.startswith(w, j) for w in _MONEY_WORDS) or any(s.startswith(w, j) for w in _UNIT_COMPOUND):
+    if any(s.startswith(w, j) for w in _MONEY_WORDS):
         return True
     if ch in _UNIT_ALWAYS:
         return True
     if ch in "手元":
-        nxt = s[_next_visible(s, j + 1):][:1]
+        nxt = s[_next_fmt(s, j + 1):][:1]
         if ch == "手":
             return not _is_cjk(nxt)
         return nxt not in ("器", "宇", "素")
@@ -102,7 +114,7 @@ def _money_tail(s: str, i: int) -> bool:
 
 def _money_head(s: str, i: int) -> bool:
     """匹配之前的上下文是否表明这是金额：货币符号前缀，或作为独立词出现的『人民币』
-    （数字人民币/离岸人民币 这类词尾不算）。"""
+    （数字/离岸/在岸/跨境人民币 这类词尾不算；折合/约合人民币 仍算货币前缀）。"""
     j = i - 1
     while j >= 0 and (s[j].isspace() or s[j] in _FORMAT_CHARS):
         j -= 1
@@ -110,8 +122,7 @@ def _money_head(s: str, i: int) -> bool:
         return True
     start = j + 1 - 3
     if start >= 0 and s[start:j + 1] == "人民币":
-        before = s[start - 1:start]
-        return not (before and _is_cjk(before))
+        return not s[:start].endswith(("数字", "离岸", "在岸", "跨境"))
     return False
 
 
@@ -275,7 +286,8 @@ class Nodes:
         name_code = next((t for t, n in known.items() if n and n in qn), None)
         out = None
         small_src = None
-        if self.d.policy.intake.get("classifier", "llm") == "small" and h.decision_client is not None:
+        if (self.d.policy.intake.get("classifier", "llm") == "small" and h.decision_client is not None
+                and not dropped):   # 有疑似金额候选时交给大模型裁决（small 路径无法补救被守卫丢弃的代码）
             try:
                 out = self._intake_small(h, q, code or name_code, known)
                 if out is not None:
@@ -300,10 +312,17 @@ class Nodes:
         if explicit is None:
             if small_src and _CODE.fullmatch(model_ticker):
                 code, code_src = model_ticker, small_src
-            elif _CODE.fullmatch(model_ticker) and (not candidates or model_ticker in candidates):
-                # 模型给了原文里没有的标的才算『推断』；回显可见代码仍记 code
+            elif _CODE.fullmatch(model_ticker) and (not codes or model_ticker in candidates):
+                # 需要按公司名推断（问题里没有可见代码）或命中疑似金额候选时才轮到模型裁决；
+                # 回显可见代码记 code；模型选中『疑似金额』必须写事件（敏感问题不写数字原文）
                 code = model_ticker
-                code_src = "code" if model_ticker in codes else "model"
+                if model_ticker in codes:
+                    code_src = "code"
+                else:
+                    code_src = "model"
+                    if model_ticker in dropped:
+                        shown = "（已脱敏）" if sensitive_hit else model_ticker
+                        self._event(state, "intake", f"注意：按模型判断采用疑似金额的六位数 {shown} 作为标的，请核对")
             elif len(codes) == 1:
                 code, code_src = next(iter(codes)), "code"
             elif name_code:
@@ -327,8 +346,13 @@ class Nodes:
             self._event(state, "intake", f"注意：问题中还出现拆码候选 {next(iter(loose))}，未采用（将按 {code} 继续）")
         stray = dropped - ({code} if code else set())
         if stray:
-            # 金额守卫是启发式的（如『元件/元旦』词首）：被排除的六位数必须可见，避免改写标的时静默
-            self._event(state, "intake", f"注意：问题里另有疑似金额的六位数（未采用）：{'、'.join(sorted(stray))}")
+            # 金额守卫是启发式的（如『元件/元旦』词首）：被排除的六位数必须可见，避免改写标的时静默；
+            # 敏感问题的数字已被脱敏落盘，事件里不能再出现原文
+            if sensitive_hit:
+                self._event(state, "intake", "注意：问题里另有疑似金额的六位数（已脱敏，未采用）")
+            else:
+                lead = "另有" if code else "出现"
+                self._event(state, "intake", f"注意：问题里{lead}疑似金额的六位数（未采用）：{'、'.join(sorted(stray))}")
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
         upd = {
