@@ -685,3 +685,32 @@ def test_visible_code_model_name_dropped(repo, policy):
     assert task["request"]["ticker"] == "600519"
     notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
     assert not any("五粮液" in m for m in notes)
+
+
+def test_zhong_alias_whitelist_only(repo, policy):
+    """『中X』别名只认白名单且排除『其中石油』式词中命中：中医药/其中银行/其中石油 板块问句必须失败。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600056", company="中国医药"), "中医药板块最近怎么样")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("601988", company="中国银行"),
+                     "我看好金融板块，其中银行股最近表现如何")
+    assert task2["status"] == "failed" and task2["request"].get("ticker") is None
+    task3 = _run_llm(repo, policy, _EchoTickerLLM("601857", company="中国石油"),
+                     "能源板块怎么看，其中石油价格影响大吗")
+    assert task3["status"] == "failed" and task3["request"].get("ticker") is None
+
+
+def test_numeric_name_range_amounts_rejected(repo, policy):
+    """数字名的区间/口语金额语境：360-500元、360万块、360多块 都不是名称证据。"""
+    assert not _name_evidence("360", "预算360-500元怎么配置")
+    assert not _name_evidence("360", "赚了360万块")
+    assert not _name_evidence("360", "360多块")
+    task = _run_llm(repo, policy, _EchoTickerLLM("601360", company="360"), "预算360-500元怎么配置")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+
+
+def test_semiconductor_tail_rejected(repo, policy):
+    """『导体』停用：半导体板块不再为华虹半导体背书；中石油白名单不受影响。"""
+    assert not _name_evidence("华虹半导体", "半导体板块最近怎么样")
+    task = _run_llm(repo, policy, _EchoTickerLLM("688347", company="华虹半导体"), "半导体板块最近怎么样")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+    assert _name_evidence("中国石油", "我买了中石油")

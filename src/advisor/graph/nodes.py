@@ -259,12 +259,14 @@ def _mask_six(text: str) -> str:
     return re.sub(r"\d{6,}", "[已脱敏]", text or "")
 
 
+_ZHONG_ALIASES = {"中国石油": "中石油", "中国石化": "中石化"}
+
 _NAME_STOP_TAILS = ("银行", "科技", "证券", "股份", "集团", "控股", "国际", "中国", "能源",
                     "电力", "医药", "实业", "投资", "发展", "产业", "板块", "汽车", "保险",
                     "航空", "传媒", "钢铁", "石油", "石化", "电器", "时代", "地产", "建筑",
                     "机械", "家电", "食品", "饮料", "酒业", "港口", "航运", "船舶", "军工",
                     "啤酒", "水泥", "医疗", "矿业", "重工", "高速", "铁路", "机场", "黄金",
-                    "稀土", "电子", "通信", "物流", "旅游", "化工", "煤炭", "有色", "半导体")
+                    "稀土", "电子", "通信", "物流", "旅游", "化工", "煤炭", "有色", "导体")
 
 
 def _name_evidence(name: str, qn: str) -> bool:
@@ -281,7 +283,16 @@ def _name_evidence(name: str, qn: str) -> bool:
         m = re.search(rf"(?<![0-9]){re.escape(name)}(?![0-9])", qn)
         if not m:
             return False
-        return not (_money_tail(qn, m.end()) or _money_head(qn, m.start()))   # '360万元' 不是名称
+        if _money_tail(qn, m.end()) or _money_head(qn, m.start()):
+            return False                                   # '360万元' 不是名称
+        j = _next_visible(qn, m.end())
+        if j < len(qn) and qn[j] in "-–—~～至到":       # '360-500元' 这类区间
+            k = _next_visible(qn, j + 1)
+            if k < len(qn) and qn[k].isdigit():
+                return False
+        if qn[j:j + 2] in ("万块", "多块", "来块"):        # 口语金额
+            return False
+        return True
     if len(name) < 2 or name in _NAME_STOP_TAILS:
         return False
     if name in qn:
@@ -292,11 +303,16 @@ def _name_evidence(name: str, qn: str) -> bool:
     tail = name[-2:]
     if tail not in _NAME_STOP_TAILS and tail in qn:
         return True
-    # '中国石油' → '中石油'、'中国石化' → '中石化' 这类 A 股惯用简称
-    if name.startswith("中国") and len(name) >= 4:
-        alias = "中" + name[-2:]
-        if alias not in _NAME_STOP_TAILS and alias in qn:
-            return True
+    # '中国石油' → '中石油'、'中国石化' → '中石化' 惯用简称：只认白名单，
+    # 不按『中+尾2字』生成（中医药/中银行/中建筑 都是普通短语，不是简称）；
+    # 『其中石油/其中石化』里的词中命中不算（前一字『其』时跳过）
+    alias = _ZHONG_ALIASES.get(name)
+    if alias:
+        start = qn.find(alias)
+        while start != -1:
+            if start == 0 or qn[start - 1] != "其":
+                return True
+            start = qn.find(alias, start + 1)
     return False
 
 
