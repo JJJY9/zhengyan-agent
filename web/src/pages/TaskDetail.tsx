@@ -102,6 +102,12 @@ export default function TaskDetail() {
   const qCodes = ashareCodes(task.request.question);
   const multiIssue = (task.error ?? "").includes("多个股票代码")
     || (!task.request.ticker && !redacted && qCodes.length > 1);
+  const tickerSrc = task.request.ticker_source;
+  const tickerInferred = task.request.ticker
+    ? (tickerSrc ? tickerSrc === "loose" || tickerSrc === "model" : redacted && !hasAshareCode(task.request.question))
+    : false;
+  // 历史任务 request.ticker 可能缺失：回退到已完成档案的 key（用户任务无命名空间前缀，含『:』时取后半段）
+  const displayTicker = task.request.ticker ?? (task.result?.dossier_key ? task.result.dossier_key.split(":").pop()! : null);
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
   const escalated = task.events?.some((e) => e.node === "quality_gate" && e.message.includes("升级"));
   const finalRouting = task.result?.routing ?? (escalated && routing ? { ...routing, route: "deep", escalated_from: "standard", source: "escalation" } as RouteDecision : routing);
@@ -122,8 +128,8 @@ export default function TaskDetail() {
       {actionErr && <div className="error">{actionErr}</div>}
       <div className="card">
         <div className="kv"><span>问题</span><b>{task.request.question}</b></div>
-        <div className="kv"><span>标的</span>{task.request.ticker
-          ? <b>{task.request.ticker}{task.request.redacted && !hasAshareCode(task.request.question) ? "（脱敏后推断）" : ""}</b>
+        <div className="kv"><span>标的</span>{displayTicker
+          ? <b>{displayTicker}{tickerInferred ? "（脱敏后推断）" : ""}</b>
           : <span className="muted">未识别</span>}</div>
         <div className="kv"><span>数据截至</span>{task.request.as_of ? `${task.request.as_of}（只用这天及之前公开的信息）` : "今天（使用最新可得的信息）"}</div>
         <div className="kv"><span>研究方式</span>{task.request.route === "auto" ? "由系统根据问题自动选择" : `${ROUTE_LABEL[task.request.route]}（你指定的）`}</div>

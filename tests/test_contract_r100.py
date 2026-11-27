@@ -205,3 +205,70 @@ def test_explicit_ticker_conflict_with_code_is_visible(repo, policy):
     task = repo.get_task(tid)
     notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
     assert any("指定标的是 000001" in m and "600519" in m for m in notes)
+
+
+def test_money_word_prefixes_do_not_eat_codes():
+    """R106a important：金额守卫按单位首字误伤——手机/手续费/千亿/元器件/万科A 不是金额。"""
+    assert _codes_of("002475手机业务占比") == {"002475"}
+    assert _codes_of("600519手续费多少") == {"600519"}
+    assert _codes_of("600519千亿市值怎么看") == {"600519"}
+    assert _codes_of("600519元器件业务和002475比") == {"600519", "002475"}
+    assert _codes_of("000002万科A和600519比") == {"000002", "600519"}
+    assert _codes_of("600519元") == set()                     # 真金额仍排除
+    assert _codes_of("600519万元营收") == set()
+
+
+def test_money_word_prefix_multi_code_not_silently_rerouted(repo, policy):
+    """多代码问题里一只代码后接『万』等词首：不得被金额守卫删掉后静默研究另一只。"""
+    task = _run(repo, policy, "000002万科A和600519比怎么样")
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "")
+    assert task["request"].get("ticker") is None
+
+
+def test_money_comma_decimal_and_currency_prefix():
+    """逗号小数、小数点后空格、货币前缀都算金额；逗号分隔的代码列表仍是代码。"""
+    assert _codes_of("600519,23元") == set()
+    assert _codes_of("600519,300750") == {"600519", "300750"}
+    assert _codes_of("600519. 23元") == set()
+    assert _codes_of("￥600519") == set()
+    assert _codes_of("人民币600519") == set()
+
+
+def test_loose_not_used_when_multiple_strict_codes(repo, policy):
+    """严格多代码时宽松候选不得抢选：仍按『多个股票代码』显式失败。"""
+    task = _run(repo, policy, "我持仓600 519股，也持有000001，怎么办？")
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "")
+    assert task["request"].get("ticker") is None
+
+
+def test_loose_rejects_spaced_month_year():
+    assert _codes_of_loose("03 2025 年报") == set()
+    assert _codes_of_loose("2025 03 年报") == set()
+
+
+def test_ticker_source_recorded(repo, policy):
+    """回填/识别的 ticker 要记录来源：explicit / code / loose（前端据此标注推断）。"""
+    svc = _svc(repo, policy)
+    tid = svc.start(ResearchRequest(question="复核 600519 半年报业绩", as_of=as_of(), route="quick",
+                                    ticker="000001"), background=False)
+    assert repo.get_task(tid)["request"]["ticker_source"] == "explicit"
+    tid = svc.start(ResearchRequest(question="复核 600519 半年报业绩", as_of=as_of(), route="quick"),
+                    background=False)
+    assert repo.get_task(tid)["request"]["ticker_source"] == "code"
+    tid = svc.start(ResearchRequest(question="我600" + NBSP + "519股成本价30元怎么办？", as_of=as_of(),
+                                    route="quick"), background=False)
+    assert repo.get_task(tid)["request"]["ticker_source"] == "loose"
+
+
+def test_explicit_conflicts_with_code_and_name_both_logged(repo, policy):
+    """explicit 与问题里的代码、公司名同时冲突：两条 intake 事件都要写（不再 elif 吞掉）。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    svc = _svc(repo, policy)
+    tid = svc.start(ResearchRequest(question=f"{NAME} 和 600519 比怎么样", as_of=as_of(), route="quick",
+                                    ticker="000001"), background=False)
+    notes = [e["message"] for e in repo.get_task(tid)["events"] if e["node"] == "intake"]
+    assert any("出现代码" in m and "600519" in m for m in notes)
+    assert any("点名的是" in m and NAME in m for m in notes)

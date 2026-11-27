@@ -30,26 +30,55 @@ _CODE_SPACED = re.compile(r"(?<!\d)([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[
 _FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 _DIGIT_TOKEN = re.compile(r"[0-9]+")
 _LOOSE_SEP_GAP = re.compile(r"[\s​-‍﻿\-–—－~·•]+")
-_UNIT_TAIL = "元万亿千%％手份块"
+_UNIT_COMPOUND = ("万元", "亿元", "千元", "百万元", "千万元", "万手", "万股", "亿股", "万亿")
 _MONEY_WORDS = ("美元", "港元", "港币", "人民币")
+_UNIT_ALWAYS = "份块%％"
 _FORMAT_CHARS = "\u200b\u200c\u200d\ufeff"
+_MONEY_HEADS = "￥¥$€"
+
+
+def _is_cjk(ch: str) -> bool:
+    return bool(ch) and "一" <= ch <= "鿿"
 
 
 def _money_tail(s: str, i: int) -> bool:
-    """匹配结束后的下一个有效字符是否表明这是金额/数量而不是代码：
-    跳过空白与零宽/格式字符；小数（.或．后跟数字）、金额/数量单位（元万亿千/%/手/份/块、
-    美元/港元/港币/人民币）都算。'股' 仍是确定性例外（'我持有600519股' 视为标的）。"""
+    """匹配结束后的上下文是否表明这是金额/数量而不是代码：
+    小数（.／．可隔空白后接数字、',' 后 1-2 位小数）；复合单位（万元/亿元/万手/万股/万亿…）
+    与币种（美元/港元/港币/人民币）；份/块/% 恒为数量；'手' 后接汉字（手机/手续费/手头）
+    不算单位；'元' 后接 器/宇/素（元器件/元宇宙/元素）不算单位。'股' 仍是确定性例外。"""
     j = i
     while j < len(s) and (s[j].isspace() or s[j] in _FORMAT_CHARS):
         j += 1
     if j >= len(s):
         return False
     ch = s[j]
-    if ch in ".．" and j + 1 < len(s) and s[j + 1].isdigit():
+    if ch in ".．":
+        k = j + 1
+        while k < len(s) and (s[k].isspace() or s[k] in _FORMAT_CHARS):
+            k += 1
+        return k < len(s) and s[k].isdigit()
+    if ch in ",，":
+        m = re.match(r"[,，](\d+)", s[j:])
+        return bool(m) and 1 <= len(m.group(1)) <= 2
+    if any(s.startswith(w, j) for w in _MONEY_WORDS) or any(s.startswith(w, j) for w in _UNIT_COMPOUND):
         return True
-    if ch in _UNIT_TAIL:
+    if ch in _UNIT_ALWAYS:
         return True
-    return any(s.startswith(w, j) for w in _MONEY_WORDS)
+    if ch == "手":
+        return not _is_cjk(s[j + 1:j + 2])
+    if ch == "元":
+        return s[j + 1:j + 2] not in ("器", "宇", "素")
+    return False
+
+
+def _money_head(s: str, i: int) -> bool:
+    """匹配之前的上下文是否表明这是金额：货币符号前缀（￥/¥/$/€）或紧邻的『人民币』。"""
+    j = i - 1
+    while j >= 0 and (s[j].isspace() or s[j] in _FORMAT_CHARS):
+        j -= 1
+    if j >= 0 and s[j] in _MONEY_HEADS:
+        return True
+    return s[:j + 1].endswith("人民币")
 
 
 def _norm_digits(text: str) -> str:
@@ -64,11 +93,11 @@ def _norm_code(text: str) -> str:
 
 def _codes_of(text: str) -> set[str]:
     """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。
-    六位数金额/小数（'600519.23元'、'600 519 万元'、'600519美元'）不是标的，按尾随上下文排除。"""
+    六位数金额/小数（'600519.23元'、'600 519 万元'、'600519美元'、'￥600519'）不是标的，按上下文排除。"""
     s = text or ""
     out: set[str] = set()
     for m in _CODE_SPACED.finditer(s):
-        if _money_tail(s, m.end()):
+        if _money_tail(s, m.end()) or _money_head(s, m.start()):
             continue
         out.add(_norm_code(m.group(1)))
     return out
@@ -95,14 +124,21 @@ def _codes_of_loose(text: str) -> set[str]:
         hyphen = any(ch in gap for ch in "-–—－")
         if split not in ((3, 3), (2, 4), (4, 2)) or (hyphen and split != (3, 3)):
             continue
-        if (a1 and s[a1 - 1].isdigit()) or (b2 < len(s) and s[b2].isdigit()):
-            continue                     # 邻接（含非 ASCII）数字：不是独立代码
+        # 月-年/年-月形状（'03 2025'、'2025 03'）不是标的
+        if split == (2, 4) and 1 <= int(s[a1:a2]) <= 12 and 1900 <= int(s[b1:b2]) <= 2100:
+            continue
+        if split == (4, 2) and 1900 <= int(s[a1:a2]) <= 2100 and 1 <= int(s[b1:b2]) <= 12:
+            continue
+        if (a1 and s[a1 - 1].isdecimal()) or (b2 < len(s) and s[b2].isdecimal()):
+            continue                     # 邻接（含非 ASCII）数字：不是独立代码（isdecimal 对齐 \d/Nd）
         if (a1 and s[a1 - 1] in date_seps) or (b2 < len(s) and s[b2] in date_seps):
             continue                     # 日期片段：'2024-12-31\n2025-01-02' 的 31+2025 不能拼成 312025
-        if _money_tail(s, b2):
-            continue                     # 金额/小数：'300\n750 元'、'600\xa0519 美元'
+        if _money_tail(s, b2) or _money_head(s, a1):
+            continue                     # 金额/小数：'300\n750 元'、'￥600 519'
         out.add(join)
     return out
+
+
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
@@ -190,6 +226,7 @@ class Nodes:
         # 敏感问题下始终计算（即使已有严格码），仅用于冲突可见性与多候选提示。
         loose = _codes_of_loose(q) if sensitive_hit else set()
         code = explicit or (next(iter(codes)) if len(codes) == 1 else None)   # 多个代码不硬猜，交给模型/澄清
+        code_src = "explicit" if explicit else ("code" if code else None)
         known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
         name_hits = {t for t, n in known.items() if n and n in qn}   # 名字先本地解析，脱敏后模型看不到也能识别
         name_code = next((t for t, n in known.items() if n and n in qn), None)
@@ -215,20 +252,21 @@ class Nodes:
         model_ticker = _norm_code(out.ticker)
         if explicit is None:
             if _CODE.fullmatch(model_ticker) and (not codes or model_ticker in codes):
-                code = model_ticker                       # 模型看到上下文：金额里的数字不再被当成代码
+                code, code_src = model_ticker, "model"  # 模型看到上下文：金额里的数字不再被当成代码
             elif len(codes) == 1:
-                code = next(iter(codes))
+                code, code_src = next(iter(codes)), "code"
             elif name_code:
-                code = name_code
-            elif len(loose) == 1:
-                # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的
-                code = next(iter(loose))
+                code, code_src = name_code, "name"
+            elif not codes and len(loose) == 1:
+                # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的。
+                # 严格代码存在时（哪怕多个）一律不用兜底——多码必须显式失败而不是静默选定。
+                code, code_src = next(iter(loose)), "loose"
                 self._event(state, "intake", f"问题中的数字已被脱敏；从拆分数字中识别到标的 {code}，将以它继续（审批时可拒绝）")
         if explicit:
             if codes and explicit not in codes:
                 self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里出现代码 "
                                              f"{'、'.join(sorted(codes))}，将按指定标的继续")
-            elif name_hits and explicit not in name_hits:
+            if name_hits and explicit not in name_hits:
                 names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
                 self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里点名的是 {names}，将按指定标的继续")
             if len(loose) == 1 and next(iter(loose)) != explicit:
@@ -245,10 +283,13 @@ class Nodes:
             "safe_question": self.guard.redact_question(q),
         }
         if not explicit and code:
-            # 回写识别出的股票代码：失败/取消后的「按原参数重试」不再依赖问题文本里仍带代码
-            self.d.repo.update_task(state["task_id"], **{"request.ticker": code})
+            # 回写识别出的股票代码：失败/取消后的「按原参数重试」不再依赖问题文本里仍带代码；
+            # 同时记录来源（code/model/name/loose），前端据此标注「推断」
+            self.d.repo.update_task(state["task_id"], **{"request.ticker": code, "request.ticker_source": code_src})
         if not code:
             if len(codes) > 1:
+                if loose:
+                    self._event(state, "intake", f"问题里的数字被拆开且出现候选（{'、'.join(sorted(loose))}），未自动选择")
                 upd.update(status="failed", error=f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
                                                    "请只保留一个或直接写明要研究哪一只")
             elif len(loose) > 1:

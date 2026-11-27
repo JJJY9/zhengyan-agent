@@ -108,6 +108,8 @@ class ResearchService:
             request_doc["question"] = self.guard.redact_question(req.question)
             if request_doc["question"] != req.question:
                 request_doc["redacted"] = True     # 前端据此提示：被抹掉的数字重试无法恢复
+            if request_doc.get("ticker"):
+                request_doc["ticker_source"] = "explicit"
             if not request_doc.get("ticker"):
                 # 脱敏后问题里的代码可能被遮蔽：落盘时就把解析结果写进请求（只存代码不存原文），
                 # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试。
@@ -115,12 +117,15 @@ class ResearchService:
                 # 解析，问题提到多家公司时重试会研究错标的）。R98a 审计：不要把名称启发式写成权威值。
                 from advisor.graph.nodes import _CODE, _codes_of, _codes_of_loose, _norm_digits
                 codes = _codes_of(_norm_digits(req.question))
+                source = "code"
                 if not codes and self.guard.find_sensitive(req.question):
-                    codes = _codes_of_loose(req.question)   # 敏感问题的数字会被遮蔽：宽松合并兜底
+                    codes = _codes_of_loose(req.question)   # 敏感问题的数字会被遮蔽：拆码兜底
+                    source = "loose"
                 if len(codes) == 1:
                     code = next(iter(codes))
                     if _CODE.fullmatch(code):          # 持久化产物必须能通过 request.ticker 的 ^[0-9]{6}$
                         request_doc["ticker"] = code
+                        request_doc["ticker_source"] = source
             self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}),
                                        instance=self.instance)
             payload = {
