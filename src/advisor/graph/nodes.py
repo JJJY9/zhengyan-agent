@@ -32,8 +32,9 @@ def _norm_digits(text: str) -> str:
 
 
 def _codes_of(text: str) -> set[str]:
-    """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。"""
-    return {m.group(1).replace(" ", "") for m in _CODE_SPACED.finditer(text or "")}
+    """问题中出现的股票代码：允许代码内部一个空白（'600 519'），不把相邻数字误并。
+    去空白用 \\s（含全角空格/制表符/换行）：产物会被持久化进 request.ticker 并要求匹配 ^[0-9]{6}$。"""
+    return {re.sub(r"\s+", "", m.group(1)) for m in _CODE_SPACED.finditer(text or "")}
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
