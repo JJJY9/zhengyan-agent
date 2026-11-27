@@ -259,21 +259,62 @@ def _mask_six(text: str) -> str:
     return re.sub(r"\d{6,}", "[已脱敏]", text or "")
 
 
-_ZHONG_ALIASES = {"中国石油": "中石油", "中国石化": "中石化"}
+_ZHONG_ALIASES = {"中国石油": "中石油", "中国石化": "中石化",
+                  "中国银行": "中行", "中国建筑": "中建"}
 
 _NAME_STOP_TAILS = ("银行", "科技", "证券", "股份", "集团", "控股", "国际", "中国", "能源",
                     "电力", "医药", "实业", "投资", "发展", "产业", "板块", "汽车", "保险",
                     "航空", "传媒", "钢铁", "石油", "石化", "电器", "时代", "地产", "建筑",
                     "机械", "家电", "食品", "饮料", "酒业", "港口", "航运", "船舶", "军工",
                     "啤酒", "水泥", "医疗", "矿业", "重工", "高速", "铁路", "机场", "黄金",
-                    "稀土", "电子", "通信", "物流", "旅游", "化工", "煤炭", "有色", "导体")
+                    "稀土", "电子", "通信", "物流", "旅游", "化工", "煤炭", "有色", "导体",
+                    "公司", "半导体")
+
+_BAD_ALIAS_PREV = "集美俄日手空金基"
+
+
+def _occurrence_ok(qn: str, pos: int) -> bool:
+    """词中命中排除：『其中石油』（其=其中）不算，但『尤其中石油/极其中石油』算；
+    『集中/美中/俄中/基金中…』这类复合前缀也不算。"""
+    if pos == 0:
+        return True
+    prev = qn[pos - 1]
+    if prev == "其":
+        return qn[max(0, pos - 2):pos] in ("尤其", "极其")
+    if qn[max(0, pos - 2):pos] == "其中" and (pos < 3 or qn[pos - 3] not in "尤极"):
+        return False                       # 『其中平安银行』这类两字后接
+    return prev not in _BAD_ALIAS_PREV
+
+
+def _find_ok(qn: str, token: str) -> bool:
+    start = qn.find(token)
+    while start != -1:
+        if _occurrence_ok(qn, start):
+            return True
+        start = qn.find(token, start + 1)
+    return False
+
+
+def _colloquial_money(qn: str, j: int) -> bool:
+    """数字后的口语/区间金额：万块/多块/来块、多/来/余+万/亿/千、万+块/多、
+    万左右/万出头/万上下。"""
+    two = qn[j:j + 2]
+    three = qn[j:j + 3]
+    if two in ("万块", "多块", "来块"):
+        return True
+    if qn[j:j + 1] in "多来余" and qn[j + 1:j + 2] in "万亿千":
+        return True
+    if qn[j:j + 1] in "万亿千" and qn[j + 1:j + 2] in "块多":
+        return True
+    return qn[j:j + 1] in "万亿千" and three[j - j + 1:3] in ("左右", "出头", "上下") if False else qn[j + 1:j + 3] in ("左右", "出头", "上下")
 
 
 def _name_evidence(name: str, qn: str) -> bool:
     """模型自报公司名与问题文本的弱匹配（防幻觉的弱证据门槛）：
     整名等于通用行业词、或公共片段含通用行业词（中国石油/中国石化 的『中国石』）都不作数；
-    全名包含、无停用词的 ≥3 字片段、或 2 字首/尾简称（避开停用词）出现在问题里才算证据。
-    纯数字名只认非 6 位形态（'360' 可用，A 股代码形态不算名称）。"""
+    全名包含、无停用词的 ≥3 字片段（跳过纯数字片段）、或 2 字尾简称（避开停用词与词中命中）
+    出现在问题里才算证据。纯数字名只认非 6 位形态（'360' 可用，A 股代码形态不算名称），
+    区间/口语金额语境（360-500元、赚了360多万）不算。"""
     name = re.sub(r"[\s\W_]+", "", name or "")
     if not name:
         return False
@@ -286,11 +327,11 @@ def _name_evidence(name: str, qn: str) -> bool:
         if _money_tail(qn, m.end()) or _money_head(qn, m.start()):
             return False                                   # '360万元' 不是名称
         j = _next_visible(qn, m.end())
-        if j < len(qn) and qn[j] in "-–—~～至到":       # '360-500元' 这类区间
+        if j < len(qn) and qn[j] in "-–—~～至到/／－−〜、":   # '360-500元' 这类区间
             k = _next_visible(qn, j + 1)
             if k < len(qn) and qn[k].isdigit():
                 return False
-        if qn[j:j + 2] in ("万块", "多块", "来块"):        # 口语金额
+        if _colloquial_money(qn, j):                        # 口语金额
             return False
         return True
     if len(name) < 2 or name in _NAME_STOP_TAILS:
@@ -298,22 +339,15 @@ def _name_evidence(name: str, qn: str) -> bool:
     if name in qn:
         return True
     grams = [name[i:i + 3] for i in range(len(name) - 2)]
-    if any(g in qn and not any(sw in g for sw in _NAME_STOP_TAILS) for g in grams):
+    if any(g in qn and not g.isdigit() and not any(sw in g for sw in _NAME_STOP_TAILS)
+           for g in grams):
         return True
     tail = name[-2:]
-    if tail not in _NAME_STOP_TAILS and tail in qn:
+    if tail not in _NAME_STOP_TAILS and _find_ok(qn, tail):
         return True
-    # '中国石油' → '中石油'、'中国石化' → '中石化' 惯用简称：只认白名单，
-    # 不按『中+尾2字』生成（中医药/中银行/中建筑 都是普通短语，不是简称）；
-    # 『其中石油/其中石化』里的词中命中不算（前一字『其』时跳过）
+    # '中国石油' → '中石油' 等惯用简称：只认白名单，且排除『其中/集中…』词中命中
     alias = _ZHONG_ALIASES.get(name)
-    if alias:
-        start = qn.find(alias)
-        while start != -1:
-            if start == 0 or qn[start - 1] != "其":
-                return True
-            start = qn.find(alias, start + 1)
-    return False
+    return bool(alias and _find_ok(qn, alias))
 
 
 class Nodes:

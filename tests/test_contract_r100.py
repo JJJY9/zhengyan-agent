@@ -714,3 +714,38 @@ def test_semiconductor_tail_rejected(repo, policy):
     task = _run_llm(repo, policy, _EchoTickerLLM("688347", company="华虹半导体"), "半导体板块最近怎么样")
     assert task["status"] == "failed" and task["request"].get("ticker") is None
     assert _name_evidence("中国石油", "我买了中石油")
+
+
+def test_fullwidth_range_and_colloquial_rejected(repo, policy):
+    """全角区间（－／）与口语金额（多万/万左右）不得为数字名背书。"""
+    assert not _name_evidence("360", "预算360－500元怎么配置")
+    assert not _name_evidence("360", "预算360／500元怎么配置")
+    assert not _name_evidence("360", "赚了360多万，怎么理财")
+    assert not _name_evidence("360", "360万左右怎么配置")
+    task = _run_llm(repo, policy, _EchoTickerLLM("601360", company="360"), "赚了360多万，怎么理财")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+
+
+def test_word_internal_hits_rejected_but_youqi_allowed(repo, policy):
+    """词中命中：集中石油/基金中石油/其中平安银行 不算；『尤其中石油』恢复召回。"""
+    assert not _name_evidence("中国石油", "集中石油投资的风险")
+    assert not _name_evidence("中国石油", "基金中石油仓位变化")
+    assert not _name_evidence("中国平安", "我看好金融板块，其中平安银行最近表现如何")
+    task = _run_llm(repo, policy, _EchoTickerLLM("601857", company="中国石油"), "能源股普涨，尤其中石油表现最好")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "601857"
+
+
+def test_digit_prefixed_name_and_semi_name(repo, policy):
+    """数字前缀名（360集团）不得经 3 字片段绕过金额语境；『半导体』整名停用。"""
+    assert not _name_evidence("360集团", "有360万元闲钱怎么配置")
+    assert not _name_evidence("半导体", "半导体板块最近怎么样")
+    task = _run_llm(repo, policy, _EchoTickerLLM("601360", company="360集团"), "有360万元闲钱怎么配置")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+
+
+def test_zhonghang_alias_recall(repo, policy):
+    """白名单新增 中国银行→中行、中国建筑→中建 的简称召回。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("601988", company="中国银行"), "中行最近怎么样")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "601988"
