@@ -363,14 +363,14 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
 
   const submit = useCallback(async (question: string, route: string, as_of: string, ticker?: string) => {
-    // 页面附带的 ticker 只在问题没有点名其它标的时使用：其它 A 股代码、其它已跟踪公司名都算改问；
-    // 财务数字（208448 万元）不是代码。判定与后端 nodes._CODE_SPACED 同口径。
-    const t = resolveSubmitTicker(question, ticker, watch);
+    // 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用；财务数字（208448 万元）不是代码。
+    // 名称与页面标的的冲突不在这里仲裁（R100a 审计：前端按档案全名仲裁会因简称/网站名翻转研究标的）。
+    const t = resolveSubmitTicker(question, ticker);
     const { task_id } = await api.research({ question, route, as_of, ticker: t });
     setTurns((ts) => [...ts, { task_id, question, route, as_of, ts: Date.now() }]);
     setAskOpen(true);
     refresh();
-  }, [refresh, watch]);
+  }, [refresh]);
 
   const apiValue = useMemo<ShellApi>(() => ({
     setAskContext: setCtx,
