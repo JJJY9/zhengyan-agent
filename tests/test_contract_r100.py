@@ -9,6 +9,7 @@ from advisor.contracts import ResearchRequest
 from advisor.graph.deps import build_deps
 from advisor.graph.nodes import _codes_of, _codes_of_loose
 from advisor.graph.runner import ResearchService
+from advisor.skills.research.earnings_review import IntakeOut
 from tests.fakes import CODE, NAME, FakeDecision, FakeLLM, FakeSource, FakeWebTools, as_of
 
 NBSP = " "
@@ -272,3 +273,85 @@ def test_explicit_conflicts_with_code_and_name_both_logged(repo, policy):
     notes = [e["message"] for e in repo.get_task(tid)["events"] if e["node"] == "intake"]
     assert any("出现代码" in m and "600519" in m for m in notes)
     assert any("点名的是" in m and NAME in m for m in notes)
+
+class _EchoTickerLLM(FakeLLM):
+    """intake 返回固定 ticker 的模型桩（其余角色沿用 FakeLLM）。"""
+
+    def __init__(self, ticker: str):
+        super().__init__()
+        self._ticker = ticker
+
+    def json(self, role, system, user, schema, max_tokens=None):
+        if schema is IntakeOut:
+            return IntakeOut(company_name="", ticker=self._ticker, intent="research", focus=""), 50
+        return super().json(role, system, user, schema, max_tokens)
+
+
+def _run_llm(repo, policy, llm, question: str, **req_kw) -> dict:
+    deps = build_deps(repo, llm, policy, source=FakeSource(), web_tools=FakeWebTools())
+    svc = ResearchService(deps, InMemorySaver())
+    tid = svc.start(ResearchRequest(question=question, as_of=as_of(), route="quick", **req_kw), background=False)
+    return repo.get_task(tid)
+
+
+def test_chinese_syntax_after_code_kept(repo, policy):
+    """代码后接中文句法的逗号/句点数字（，2季度 / ，23年 / . 2024年报）不是小数。"""
+    assert _codes_of("600519，2季度营收怎么样") == {"600519"}
+    assert _codes_of("600519，23年营收怎么样") == {"600519"}
+    assert _codes_of("600519,23号公告") == {"600519"}
+    assert _codes_of("600519. 2024年报怎么样") == {"600519"}
+    assert _codes_of("600519,23元") == set()              # 真小数金额仍排除
+    task = _run(repo, policy, "600519，23年营收怎么样")
+    assert task["status"] == "done", task.get("error")
+    assert task["request"]["ticker"] == "600519"
+
+
+def test_bare_wan_amount_and_word_kept():
+    """裸万在后接句末时是金额；后接汉字（万营收）不吞代码。"""
+    assert _codes_of("营收600519万") == set()
+    assert _codes_of("600519万营收") == {"600519"}
+
+
+def test_rmb_prefix_boundary():
+    """『人民币』作为独立词才算货币前缀：数字人民币/离岸人民币 的词尾不吞代码。"""
+    assert _codes_of("人民币600519") == set()
+    assert _codes_of("数字人民币600519") == {"600519"}
+
+
+def test_dropped_candidate_is_visible_in_event(repo, policy):
+    """被金额守卫丢弃的六位数（元件/元旦等词首误伤）必须在 intake 事件里可见，不得静默改标的。"""
+    task = _run(repo, policy, "002475元件业务和600519比怎么样")
+    assert task["status"] == "done", task.get("error")
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("疑似金额" in m and "002475" in m for m in notes)
+
+
+def test_model_can_rescue_dropped_candidate(repo, policy):
+    """模型返回被金额守卫丢弃的候选时应当被采纳（此前 gate 把补救通道封死）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("002475"), "002475元件业务和600519比怎么样")
+    assert task["request"]["ticker"] == "002475"
+    assert task["request"]["ticker_source"] == "model"
+
+
+def test_visible_code_source_is_code_not_model(repo, policy):
+    """模型回显问题中可见的代码：来源应为 code，而不是 model（否则前端误标推断）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600519"), "复核 600519 半年报业绩")
+    assert task["request"]["ticker_source"] == "code"
+    # 模型给出原文没有的标的才算推断
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("600519"), "帮我看看这家公司的近况")
+    assert task2["request"]["ticker_source"] == "model"
+
+
+def test_small_classifier_path_source_code(repo, policy):
+    """small 分类器路径回显本地代码：来源应为 code（此前统一记成 model）。"""
+    svc = _svc(repo, policy, decision=FakeDecision())
+    tid = svc.start(ResearchRequest(question="复核 600519 半年报业绩", as_of=as_of(), route="quick"),
+                    background=False)
+    assert repo.get_task(tid)["request"]["ticker_source"] == "code"
+
+
+def test_retry_preserves_inferred_source(repo, policy):
+    """重试可带回来源：loose/model 的推断标注不因『按原参数重新发起』而丢失。"""
+    task = _run_llm(repo, policy, FakeLLM(), "复核 600519 半年报业绩",
+                    ticker="600519", ticker_source="loose")
+    assert task["request"]["ticker_source"] == "loose"
