@@ -99,12 +99,16 @@ const skipFmtOnly = (s: string, k: number) => {
   while (k < s.length && FORMAT_CHARS.includes(s[k])) k += 1;
   return k;
 };
+const UNIT_EXTRA = ["万份", "亿份", "千份", "千股", "千万", "百亿", "千亿", "万美元", "万港元", "亿港元"];
 const unitAt = (s: string, k0: number): boolean => {
   const k = skipFormat(s, k0);
   const rest = s.slice(k);
-  if (UNIT_COMPOUND.some((w) => rest.startsWith(w)) || MONEY_WORDS.some((w) => rest.startsWith(w))) return true;
+  if (UNIT_COMPOUND.some((w) => rest.startsWith(w)) || UNIT_EXTRA.some((w) => rest.startsWith(w))
+    || MONEY_WORDS.some((w) => rest.startsWith(w))) return true;
   const ch = rest.slice(0, 1);
-  if (ch && (UNIT_ALWAYS.includes(ch) || ch === "元")) return true;
+  if (ch && UNIT_ALWAYS.includes(ch)) return true;
+  if (ch === "元") return !["器", "宇", "素"].includes(rest[1] ?? "");
+  if (ch === "手") return !isCjk(rest[1] ?? "");
   if (ch && "万亿千".includes(ch) && (rest.length === 1 || !isCjk(rest[1] ?? ""))) return true;
   return false;
 };

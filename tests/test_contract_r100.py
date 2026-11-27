@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from advisor.contracts import ResearchRequest
 from advisor.graph.deps import build_deps
-from advisor.graph.nodes import _codes_of, _codes_of_loose
+from advisor.graph.nodes import _codes_of, _codes_of_loose, _codes_with_dropped
 from advisor.graph.runner import ResearchService
 from advisor.skills.research.earnings_review import IntakeOut
 from tests.fakes import CODE, NAME, FakeDecision, FakeLLM, FakeSource, FakeWebTools, as_of
@@ -457,3 +457,64 @@ def test_decimal_unit_table_complete():
     assert _codes_of("600519,123元") == set()
     assert _codes_of("600519,23百姓生活") == {"600519"}
     assert _codes_of("600519.12百万元") == set()
+
+def test_short_name_question_full_name_model_accepted(repo, policy):
+    """简称提问（茅台）+ 模型返回规范全称：弱名称证据应放行（修复前被逐字子串门槛误拒）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600519", company="贵州茅台"), "茅台最近怎么样，值得研究吗")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "600519"
+    assert task["request"]["ticker_source"] == "model"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("按公司名推断" in m for m in notes)
+
+
+def test_non_sensitive_split_code_as_model_evidence(repo, policy):
+    """非敏感问题里被 NBSP 拆开的代码：模型回填正确时应作为证据采纳（修复前被拒成未能识别）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600519"), "帮我看看600" + NBSP + "519这只股票")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "600519"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("按拆码推断" in m for m in notes)
+
+
+def test_name_hits_conflict_prefers_local_name(repo, policy):
+    """问题点名已跟踪公司而模型给另一只：不采纳模型码，回退本地档案名（修复前模型码覆盖名称）。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001", company="五粮液"),
+                    f"我在看{NAME}，去年营收600519万元")
+    assert task["request"]["ticker"] == CODE
+
+
+def test_comma_code_list_with_component_word_kept(repo, policy):
+    """逗号分隔的代码列表：第二个代码后接『元器件』也不得把第一个代码当千分位删掉。"""
+    assert _codes_with_dropped("600519,002475元器件业务对比")[0] == {"600519", "002475"}
+    task = _run(repo, policy, "600519,002475元器件业务对比")
+    assert task["status"] == "failed"
+    assert "多个股票代码" in (task.get("error") or "")
+
+
+def test_unit_table_extras_and_yuan_exception():
+    assert _codes_with_dropped("600519.123元器件")[0] == {"600519"}   # 元器件不是金额单位
+    assert _codes_of("600519.123万份") == set()
+    assert _codes_of("600519.123手") == set()
+    assert _codes_of("600519.123万美元") == set()
+
+
+def test_small_path_decide_sees_masked_question(repo, policy):
+    """small 分类器路径的决策调用也必须只看脱敏文本（敏感多行金额不出域到决策服务）。"""
+    decision = FakeDecision()
+    deps = build_deps(repo, FakeLLM(), policy, source=FakeSource(), web_tools=FakeWebTools(), decision=decision)
+    svc = ResearchService(deps, InMemorySaver())
+    svc.start(ResearchRequest(question="我持仓600519股，成本价30元怎么办", as_of=as_of(), route="quick"),
+              background=False)
+    assert decision.calls
+    assert "[已脱敏]" in decision.calls[0]
+    assert "600519" not in decision.calls[0]
+
+
+def test_sensitive_failure_error_has_no_digits(repo, policy):
+    """敏感失败的静态错误文案不得带示例数字。"""
+    task = _run(repo, policy, "我的房贷余额600519元怎么办")
+    assert task["status"] == "failed"
+    assert "600519" not in (task.get("error") or "")

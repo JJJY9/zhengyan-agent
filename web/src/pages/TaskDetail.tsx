@@ -104,17 +104,19 @@ export default function TaskDetail() {
   const multiIssue = (task.error ?? "").includes("多个股票代码")
     || (!task.request.ticker && !redacted && qCodes.length > 1);
   const tickerSrc = task.request.ticker_source;
-  // 字面可见：ticker 作为独立数字出现在问题原文（去代码内空格后；含被金额守卫排除的候选）
+  // 字面可见：ticker 作为独立数字出现在问题原文（去代码内空格后；边界与 A_SHARE_CODE 同用 \p{Nd}）
   const rawVisible = (t: string) =>
-    new RegExp(`(?<![0-9])${t}(?![0-9])`).test(normDigits(task.request.question).replace(/[ 　]/g, ""));
+    new RegExp(`(?<![\\p{Nd}])${t}(?![\\p{Nd}])`, "u").test(normDigits(task.request.question).replace(/[ 　]/g, ""));
   const tickerInferred = task.request.ticker
     ? (tickerSrc
         ? (tickerSrc === "loose" || tickerSrc === "model") && !rawVisible(task.request.ticker)
         : redacted && !hasAshareCode(task.request.question))
     : false;
-  const inferredLabel = tickerInferred ? (redacted ? "（脱敏后推断）" : "（推断）") : "";
   // 历史任务 request.ticker 可能缺失：回退到已完成档案的 key（用户任务无命名空间前缀，含『:』时取后半段）
   const displayTicker = task.request.ticker ?? (task.result?.dossier_key ? task.result.dossier_key.split(":").pop()! : null);
+  const inferredLabel = tickerInferred ? (redacted ? "（脱敏后推断）" : "（推断）")
+    : (!task.request.ticker && displayTicker && redacted && !hasAshareCode(task.request.question)
+        ? "（来自档案）" : "");
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
   const escalated = task.events?.some((e) => e.node === "quality_gate" && e.message.includes("升级"));
   const finalRouting = task.result?.routing ?? (escalated && routing ? { ...routing, route: "deep", escalated_from: "standard", source: "escalation" } as RouteDecision : routing);

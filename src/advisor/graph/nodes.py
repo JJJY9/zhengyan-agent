@@ -93,6 +93,8 @@ def _money_tail(s: str, i: int) -> bool:
         if not m:
             return False
         end = j + m.end()
+        if _CODE.fullmatch(m.group(1)):
+            return False              # 逗号后本身是完整 A 股代码：代码列表，不是千分位
         if len(m.group(1)) > 2:
             return _unit_at(s, end)   # 千分位/长小数：只有紧跟单位才算金额
         return _digits_money_context(s, end)
@@ -129,15 +131,22 @@ def _money_head(s: str, i: int) -> bool:
     return False
 
 
+_UNIT_EXTRA = ("万份", "亿份", "千份", "千股", "千万", "百亿", "千亿", "万美元", "万港元", "亿港元")
+
+
 def _unit_at(s: str, k: int) -> bool:
     """s[k:] 是否以金额/数量单位开头（表驱动，供小数/逗号规则使用）。"""
     k = _next_visible(s, k)
     rest = s[k:]
-    if any(rest.startswith(w) for w in _UNIT_COMPOUND + _MONEY_WORDS):
+    if any(rest.startswith(w) for w in _UNIT_COMPOUND + _UNIT_EXTRA + _MONEY_WORDS):
         return True
     ch = rest[:1]
-    if ch and (ch in _UNIT_ALWAYS or ch == "元"):
+    if ch and ch in _UNIT_ALWAYS:
         return True
+    if ch == "元":
+        return rest[1:2] not in ("器", "宇", "素")
+    if ch == "手":
+        return not _is_cjk(rest[1:2])
     if ch and ch in "万亿千" and (len(rest) == 1 or not _is_cjk(rest[1:2])):
         return True
     return False
@@ -249,6 +258,16 @@ def _mask_six(text: str) -> str:
     return re.sub(r"\d{6,}", "[已脱敏]", text or "")
 
 
+def _name_evidence(name: str, qn: str) -> bool:
+    """模型自报公司名与问题文本的弱匹配：全名包含或 ≥2 字公共片段（覆盖简称提问+全称返回）。"""
+    name = (name or "").strip()
+    if len(name) < 2:
+        return False
+    if name in qn:
+        return True
+    return any(name[i:i + 2] in qn for i in range(len(name) - 1))
+
+
 class Nodes:
     def __init__(self, deps: Deps):
         self.d = deps
@@ -319,7 +338,7 @@ class Nodes:
                 # 已给 explicit 时模型结果不会被采用，保留 small 以免多一次大模型调用
                 and not (dropped and explicit is None)):
             try:
-                out = self._intake_small(h, q, code or name_code, known)
+                out = self._intake_small(h, self.guard.redact_question(q), code or name_code, known)
                 if out is not None:
                     small_src = "code" if code else "name"   # 小模型路径回显的是本地解析结果
             except TaskCancelled:
@@ -338,33 +357,37 @@ class Nodes:
                 say(f"自动识别失败，改用规则识别：{e}")
                 out = IntakeOut()
         model_ticker = _norm_code(out.ticker)
-        candidates = codes | dropped
         if explicit is None:
+            evidence_loose = _codes_of_loose(q) if not codes else set()   # 非敏感拆码也可作为模型证据
             if small_src and _CODE.fullmatch(model_ticker):
                 code, code_src = model_ticker, small_src
-            elif _CODE.fullmatch(model_ticker) and (not codes or model_ticker in candidates):
-                # 需要按公司名推断（问题里没有可见代码）或命中疑似金额候选时才轮到模型裁决；
-                # 没有任何本地依据时，模型码必须有公司名支撑（防止幻觉标的上线）
-                accept = True
-                if not codes and model_ticker not in candidates:
-                    accept = bool((out.company_name and out.company_name in qn) or name_hits)
-                if accept:
-                    code = model_ticker
-                    if model_ticker in codes:
-                        code_src = "code"
-                        if len(codes) > 1:
-                            say(f"注意：按模型在多只代码中选择了 {model_ticker}，请核对")
-                    elif model_ticker in dropped:
-                        code_src = "model"
-                        say(f"注意：按模型判断采用疑似金额的六位数 {model_ticker} 作为标的，请核对")
-                    else:
-                        code_src = "model"
-                        say(f"注意：按公司名推断标的 {model_ticker}，请核对")
-            elif len(codes) == 1:
+            elif _CODE.fullmatch(model_ticker) and model_ticker in codes:
+                code, code_src = model_ticker, "code"
+                if len(codes) > 1:
+                    say(f"注意：按模型在多只代码中选择了 {model_ticker}，请核对")
+            elif _CODE.fullmatch(model_ticker) and codes and model_ticker in dropped:
+                code, code_src = model_ticker, "model"
+                say(f"注意：按模型判断采用疑似金额的六位数 {model_ticker} 作为标的，请核对")
+            elif not codes and _CODE.fullmatch(model_ticker):
+                # 无可见代码：模型码必须有本地依据（档案名/疑似金额/拆码/公司名弱匹配），否则不采纳
+                if model_ticker in name_hits:
+                    code, code_src = model_ticker, "name"
+                    say(f"注意：按档案名推断标的 {model_ticker}，请核对")
+                elif model_ticker in dropped:
+                    code, code_src = model_ticker, "model"
+                    say(f"注意：按模型判断采用疑似金额的六位数 {model_ticker} 作为标的，请核对")
+                elif model_ticker in evidence_loose:
+                    code, code_src = model_ticker, "model"
+                    say(f"注意：按拆码推断标的 {model_ticker}，请核对")
+                elif _name_evidence(out.company_name, qn):
+                    code, code_src = model_ticker, "model"
+                    say(f"注意：按公司名推断标的 {model_ticker}，请核对")
+            # 模型码被拒或不存在时的本地兜底（顺序独立，避免被 elif 链跳过）
+            if code is None and len(codes) == 1:
                 code, code_src = next(iter(codes)), "code"
-            elif name_code:
+            if code is None and name_code:
                 code, code_src = name_code, "name"
-            elif not codes and len(loose) == 1:
+            if code is None and not codes and len(loose) == 1:
                 # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的。
                 # 严格代码存在时（哪怕多个）一律不用兜底——多码必须显式失败而不是静默选定。
                 code, code_src = next(iter(loose)), "loose"
@@ -407,9 +430,9 @@ class Nodes:
                                                        "请只保留一个或直接写明要研究哪一只"))
             elif len(loose) > 1:
                 say(f"问题里的数字被拆开且出现多个候选（{'、'.join(sorted(loose))}），未自动选择")
-                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
+                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码")
             else:
-                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
+                upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码")
         say(f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
             f"问题类型：{INTENT_LABEL.get(intent, intent)}" + ("；问题里含个人信息，已脱敏" if sensitive else ""))
         return upd
