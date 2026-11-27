@@ -151,19 +151,24 @@ def cached_results(repo) -> dict[str, list[dict]]:
 
     每行带上缓存键里的搜索时点 `_cache_as_of`；日期晚于该时点的结果线上拿不到，直接剔除。
     """
-    out: dict[str, list[dict]] = {}
-    seen: set[tuple[str, str, str]] = set()
+    best: dict[tuple[str, str, str], tuple[tuple, list[dict]]] = {}
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0, "key": 1, "value": 1}):
         parsed = _search_key_parts(doc["key"])
         if parsed is None or parsed[0] != "user":
             continue                       # 评测命名空间的搜索结果不进入用户坏案例/统计
-        _, as_of, _count, query = parsed
+        _, as_of, count, query = parsed
+        # 同一次搜索的逻辑身份 = (as_of, count, 完整查询)：历史键与 scope 键来自两次独立外呼，
+        # 内容可能漂移——按身份折叠，绝不让同一搜索被计两次（阈值与分母不能被放大）
+        ident = (as_of, count, query)
+        rank = (bool(doc.get("value")), str(doc.get("expires_at") or ""), doc["key"])
+        cur = best.get(ident)
+        if cur is None or rank > cur[0]:
+            best[ident] = (rank, doc.get("value") or [])
+    out: dict[str, list[dict]] = {}
+    for ident in sorted(best):
+        as_of, _count, query = ident
         q = _QUERY_SUFFIX.split(query)[0].strip()
-        dedupe = (as_of, q, _raw_digest(doc.get("value") or []))
-        if dedupe in seen:                 # 历史键与 scope 键并存时不重复计数（阈值/分母不能被放大）
-            continue
-        seen.add(dedupe)
-        rows = [{**r, "_cache_as_of": as_of} for r in doc.get("value") or []]
+        rows = [{**r, "_cache_as_of": as_of} for r in best[ident][1]]
         out.setdefault(q, []).extend(r for r in rows if not _after_as_of(r))
     return out
 

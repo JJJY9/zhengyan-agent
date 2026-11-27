@@ -139,7 +139,9 @@ def run_expert(deps, p: dict) -> dict:
     namespace = p.get("namespace")
     if namespace is None:                  # 旧检查点/在飞任务没带 namespace：从任务文档兜底
         task = deps.repo.get_task(p["task_id"]) or {}
-        namespace = (task.get("request") or {}).get("namespace") or ""
+        namespace = (task.get("request") or {}).get("namespace")
+        if namespace is None:              # 任务文档也缺失：宁可隔离也不写用户缓存（fail-closed）
+            namespace = f"unknown-{p['task_id']}"
     h = deps.harness(p["task_id"], p["route"], as_of, budget, node=f"expert:{spec.key}", principal=spec.key,
                      task_scoped_cache=True, namespace=namespace)
     result = ExpertResult(expert=spec.key, name=spec.name, model_role=role, brief=p["questions"])
