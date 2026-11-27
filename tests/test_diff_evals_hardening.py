@@ -120,12 +120,12 @@ class _CompareSvc:
         self.resumed = []
         self.research = SimpleNamespace(resume=self.resume)
 
-    def start(self, req: ResearchRequest, background=False, namespace=None):
+    def start(self, req: ResearchRequest, background=False, namespace=None, **kw):
         self.deps.repo.create_task("t_x", req.model_dump(mode="json") | {"namespace": namespace})
         self.deps.repo.update_task("t_x", status="waiting_approval")
         return "t_x"
 
-    def resume(self, tid, approve, background=False):
+    def resume(self, tid, approve, background=False, **kw):
         self.resumed.append((tid, approve))
         self.deps.repo.update_task(tid, status="failed", error="评测内已自动批准后结束")
 

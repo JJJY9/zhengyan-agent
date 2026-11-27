@@ -261,9 +261,13 @@ def evaluate_s2(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: Cal
 
 # ======================= S3：检索模板 =======================
 def _cached_searches(repo) -> list[dict]:
+    from advisor.rsi.issues import _search_key_parts
     out = []
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0}):
-        _, _, as_of, _, query = doc["key"].split(":", 4)
+        parsed = _search_key_parts(doc["key"])
+        if parsed is None or parsed[0] != "user":
+            continue                       # 评测数据不能冻结进 S3 回放协议
+        _, as_of, query = parsed
         out.append({"id": _h(doc["key"])[:12], "as_of": as_of, "query": query, "raw": doc["value"] or []})
     return out
 

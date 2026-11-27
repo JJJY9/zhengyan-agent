@@ -1,5 +1,5 @@
 """三期：事件订阅与增量复核。"""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from advisor.api.common import Jobs, Svc, conflict_on
@@ -22,7 +22,9 @@ def overview(svc: Svc):
     svc.watch.sync()
     store = svc.watch.store
     return {"subscriptions": [s.model_dump(mode="json") for s in store.list_subs(active_only=False)],
-            "alerts": [a.model_dump(mode="json") for a in store.list_alerts()],
+            # 评测命名空间的提醒不进入用户列表（纵深防御：扫描入口已拒绝，历史数据也可能存在）
+            "alerts": [a.model_dump(mode="json") for a in store.list_alerts()
+                       if ":" not in (a.dossier_key or "")],
             "interval_hours": svc.deps.policy.watch.get("scan_interval_hours", 0)}
 
 
@@ -49,7 +51,7 @@ def scan_all(svc: Svc, jobs: Jobs):
 
 
 @router.post("/scan/{ticker}")
-def scan_one(ticker: str, svc: Svc):
+def scan_one(svc: Svc, ticker: str = Path(pattern=r"^[0-9]{6}$")):
     with conflict_on(WatchError):
         alert = svc.watch.scan(ticker)
     return {"alert": alert.model_dump(mode="json") if alert else None}

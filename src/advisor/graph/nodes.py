@@ -102,7 +102,7 @@ class Nodes:
         budget.paused_s = self.d.repo.task_paused_s(state["task_id"])   # 审批等待不算执行时限
         route = state.get("route") or "quick"
         return self.d.harness(state["task_id"], route, date.fromisoformat(state["as_of"]), budget, node=node,
-                              task_scoped_cache=True), budget
+                              task_scoped_cache=True, namespace=state.get("namespace", "")), budget
 
     def _event(self, state: ResearchState, node: str, msg: str) -> None:
         self.d.repo.push_event(state["task_id"], node, msg)

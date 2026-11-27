@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from advisor.contracts import SearchHit
 from advisor.contracts.skill import Skill, SkillSpec
 from advisor.evidence.grading import cst_date
+from advisor.harness.context import current_namespace
 from advisor.harness.errors import SkillFailed
 from advisor.harness.ratelimit import TokenBucket
 from advisor.storage import Repository
@@ -136,7 +137,9 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
     def search(inp: SearchIn) -> SearchOut:
         rerank_min = inp.rerank_min if inp.rerank_min is not None else float(params().get("rerank_min", 1.5))
         final_query = build_query(inp.query, inp.as_of, inp.lookback_days, policy.block_sites)
-        key = f"ds:search:{inp.as_of}:{inp.count}:{final_query}"
+        # 缓存带命名空间 provenance：评测任务（eval-*）的搜索结果不能驱动 RSI 坏案例/统计
+        scope = (current_namespace.get() or "user").replace(":", "_")
+        key = f"ds:search:{scope}:{inp.as_of}:{inp.count}:{final_query}"
         raw = repo.cache_get(key) if repo else None
         if raw is None:
             raw = tools.search(final_query, inp.count)

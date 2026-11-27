@@ -74,7 +74,7 @@ def _fake_research(repo, interrupt):
             repo.update_task("t_cli", status="waiting_approval", interrupt=interrupt)
             return "t_cli"
 
-        def resume(self, tid, approve, background=False):
+        def resume(self, tid, approve, background=False, **kw):
             self.resumed.append(approve)
             repo.update_task(tid, status="failed", error="测试结束")
 
@@ -124,12 +124,12 @@ def test_compare_autoapprove_with_plain_research_service(repo):
             self.deps = SimpleNamespace(repo=repo)
             self.resumed: list[bool] = []
 
-        def start(self, req, background=False, namespace=None):
+        def start(self, req, background=False, namespace=None, **kw):
             repo.create_task("t_cmp", req.model_dump(mode="json") | {"namespace": namespace})
             repo.update_task("t_cmp", status="waiting_approval", interrupt={"type": "consent"})
             return "t_cmp"
 
-        def resume(self, tid, approve, background=False):
+        def resume(self, tid, approve, background=False, **kw):
             self.resumed.append(approve)
             repo.update_task(tid, status="failed", error="测试结束")
 

@@ -61,6 +61,8 @@ class Watcher:
     # ---------- 扫描 ----------
     def scan(self, ticker: str, today: date | None = None) -> Alert | None:
         """有变化返回提醒（同一批变化只提醒一次），没有变化返回 None。"""
+        if ":" in ticker:
+            raise WatchError("评测命名空间的档案不进入订阅扫描")
         today = today or date.today()
         repo = self.deps.repo
         # 当前档案按研究时点取：CLI 回填会产出「版本号更高、as_of 更早」的档案，
@@ -103,6 +105,8 @@ class Watcher:
 
     def _supersede_open_alerts(self, d: Dossier) -> None:
         """档案已有更新的「研究时点」版本：旧版本触发的待处理提醒自动关闭（复核完成后 open_alerts 能清零）。"""
+        if ":" in d.key:                        # 评测档案不能关闭用户提醒（命名空间在 key 上）
+            return
         versions = {v["version"]: str(v.get("as_of"))[:10] for v in self.deps.repo.list_dossier_versions(d.ticker)}
         current = (str(d.as_of)[:10], d.version)
         for a in self.store.list_alerts(d.ticker, "open"):
