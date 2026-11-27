@@ -242,6 +242,11 @@ npm --prefix web run build           # 前端类型检查 + 构建（tsc -b && v
 Windows 下虚拟环境命令在 `.venv\Scripts\`（如 `.venv\Scripts\python -m pytest -q`）。
 
 - **离线可复现**：存储用 mongomock、模型与数据源用假替身，测试不依赖网络与 API Key；计算与门控规则另有金标用例（`evals/golden/`）。
+- **测试地图**（`tests/`，按职责分层，改哪里先跑哪里）：
+  - 单元/契约：`test_harness`（审批/预算/幂等/重试）、`test_evidence*`、`test_compute_golden`、`test_config_*`（配置 fail-closed）。
+  - 流程集成：`test_graph_e2e`（SOP→核验→质量门→版本链→审批）、`test_deep_*`、`test_phase2/3/4`、`test_api_journey`（API 八段旅程护栏）。
+  - 生命周期/并发回归：`test_task_lifecycle`、`test_eval_lifecycle`、`test_review_and_evidence`、`test_dossier_lineage`、`test_instance_rebind`、`test_window_regressions`、`test_fixwindow_*`（每轮对抗审计的修复回归，按轮次编号保留）。
+  - 性质测试（固定种子随机，只断言不变量）：`test_egress_properties_r79`（脱敏：命中即遮蔽/幂等/公开文本不变）、`test_properties_r80`（模拟盘与版本链）、`_r81`（订阅提醒状态机）、`_r82`（评测回收语义表）、`_r83`（RSI 发布/回滚指针）。新增状态机不变量时优先加到这里。
 - **CI 三道门**：GitHub Actions 上 pytest、前端构建、ruff 正确性检查，任一失败不得合并。
 - **并发与一致性**：档案版本、策略卡晋级、RSI 运行、订阅复核、后台作业等状态机都有乐观锁 / 唯一索引 / 原子抢占，并配套并发回归测试。
 - **后台任务的运行语义**（详见 `src/advisor/graph/runner.py`、`storage/repository.py`）：
