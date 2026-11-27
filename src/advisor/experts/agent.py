@@ -126,6 +126,20 @@ def expert_queries(h, spec: ExpertSpec, hint: str, company: str, ticker: str, qu
 
 
 
+def _payload_namespace(deps, p: dict) -> str:
+    """专家子任务的命名空间：载荷缺失时按任务文档兜底；文档也缺失才 fail-closed 隔离。
+
+    注意不能把「用户任务 request 里没有 namespace」当成文档缺失：那会把正常用户研究
+    误关进 unknown-* 隔离域（缓存无法复用、坏案例统计丢失）。"""
+    ns = p.get("namespace")
+    if ns is not None:
+        return ns
+    task = deps.repo.get_task(p["task_id"])
+    if task is None:
+        return f"unknown-{p['task_id']}"
+    return (task.get("request") or {}).get("namespace") or ""
+
+
 def run_expert(deps, p: dict) -> dict:
     """p: task_id, route, as_of, ticker, company, question, expert, questions, shared(dict), allocation, started_at"""
     from advisor.graph.gather import gather_web
@@ -136,12 +150,7 @@ def run_expert(deps, p: dict) -> dict:
     as_of = date.fromisoformat(p["as_of"])
     started = time.time()
     budget = Budget(limits=p["allocation"], started_at=p["started_at"], paused_s=float(p.get("paused_s", 0.0)))
-    namespace = p.get("namespace")
-    if namespace is None:                  # 旧检查点/在飞任务没带 namespace：从任务文档兜底
-        task = deps.repo.get_task(p["task_id"]) or {}
-        namespace = (task.get("request") or {}).get("namespace")
-        if namespace is None:              # 任务文档也缺失：宁可隔离也不写用户缓存（fail-closed）
-            namespace = f"unknown-{p['task_id']}"
+    namespace = _payload_namespace(deps, p)
     h = deps.harness(p["task_id"], p["route"], as_of, budget, node=f"expert:{spec.key}", principal=spec.key,
                      task_scoped_cache=True, namespace=namespace)
     result = ExpertResult(expert=spec.key, name=spec.name, model_role=role, brief=p["questions"])

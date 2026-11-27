@@ -66,6 +66,13 @@ def _future(r: dict, as_of: str | None) -> bool:
         return False
 
 
+def _slim_raw(raw: list[dict]) -> list[dict]:
+    """回放评分只读 url/authority/rerank_score/date：持久化时丢弃标题/摘要等长字段，
+    既缩小无 TTL 的协议文档，也少留用户内容的副本。"""
+    keep = ("url", "authority", "rerank_score", "date")
+    return [{k: r.get(k) for k in keep} for r in raw or []]
+
+
 def frozen_replay(ledger: Ledger, scenario: str, candidates: list[str],
                   samples: dict[str, dict] | None = None) -> list[str]:
     """固定回放集：首次评测时冻结，此后不随数据增长而变化（并发评测时以先写入者为准）。
@@ -80,10 +87,14 @@ def frozen_replay(ledger: Ledger, scenario: str, candidates: list[str],
     if not candidates:
         raise ValueError(f"{scenario} 没有可冻结的回放样本，无法评测")
     ids = sorted(candidates)
+    samples = samples or {}
+    size = len(json.dumps(samples, ensure_ascii=False, default=str).encode())
+    if size > 4_000_000:              # 单文档近 16MiB 会撞 BSON 上限：宁可显式失败也不静默半套
+        raise ValueError(f"{scenario} 回放样本过大（{size} 字节），请缩小缓存窗口后重试")
     try:
         # 一并持久化回放样本本身：缓存有 24h TTL，只存键哈希会让协议在缓存过期后永久无法加载
         ledger.db.rsi_protocols.insert_one({"scenario": scenario, "replay_ids": ids, "hash": _h(ids),
-                                            "replay_samples": samples or {},
+                                            "replay_samples": samples,
                                             "created_at": datetime.now(timezone.utc)})
     except DuplicateKeyError:                     # 另一个评测并发冻结了回放集：回读已冻结版本
         doc = ledger.db.rsi_protocols.find_one({"scenario": scenario})
@@ -318,28 +329,30 @@ def _s3_slices(deps, ledger: Ledger) -> tuple[dict[str, list[dict]], set[str]]:
         by_key[s["alias"]] = s
     replay_ids = set(frozen_replay(
         ledger, "S3", [s["id"] for s in searches],
-        samples={s["id"]: {"as_of": s["as_of"], "query": s["query"], "raw": s["raw"]} for s in searches}))
+        samples={s["id"]: {"as_of": s["as_of"], "query": s["query"],
+                           "raw": _slim_raw(s["raw"])} for s in searches}))
     doc = ledger.db.rsi_protocols.find_one({"scenario": "S3"}) or {}
-    if doc and not doc.get("replay_samples"):     # 旧协议：趁缓存还在，把样本持久化补种
-        mapping = {}
-        for fid in doc.get("replay_ids") or []:
-            s = by_key.get(fid)
-            if s is not None:
-                mapping[fid] = {"as_of": s["as_of"], "query": s["query"], "raw": s["raw"]}
-        if mapping:
-            ledger.db.rsi_protocols.update_one({"scenario": "S3", "replay_samples": {"$exists": False}},
-                                               {"$set": {"replay_samples": mapping}})
-            doc = ledger.db.rsi_protocols.find_one({"scenario": "S3"}) or doc
+    have = doc.get("replay_samples") or {}
+    missing = {}
+    for fid in doc.get("replay_ids") or []:        # 增量补种：只补缺失、幂等、每次评测都补齐
+        if fid in have:
+            continue
+        s = by_key.get(fid)
+        if s is not None:
+            missing[fid] = {"as_of": s["as_of"], "query": s["query"], "raw": _slim_raw(s["raw"])}
+    if missing:
+        ledger.db.rsi_protocols.update_one(
+            {"scenario": "S3"}, {"$set": {f"replay_samples.{fid}": v for fid, v in missing.items()}})
+        doc = ledger.db.rsi_protocols.find_one({"scenario": "S3"}) or doc
     samples = doc.get("replay_samples") or {}
     replay: list[dict] = []
     for fid in sorted(replay_ids):
-        s = by_key.get(fid)
-        if s is not None:
-            replay.append(s)
-        elif fid in samples:                      # 缓存过期：用冻结时持久化的样本继续同一套题
+        if fid in samples:                        # 冻结样本是同一套题的唯一依据：优先于实时缓存
             smp = samples[fid]
             replay.append({"id": fid, "alias": "", "as_of": smp["as_of"],
                            "query": smp["query"], "raw": smp.get("raw") or []})
+        elif fid in by_key:                       # 罕见过渡态：样本尚未补齐，退用缓存
+            replay.append(by_key[fid])
     slices = {
         "evolution": [s for s in searches if int(s["id"], 16) % 3 != 0],
         "holdout": [s for s in searches if int(s["id"], 16) % 3 == 0],
@@ -428,6 +441,8 @@ def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: 
     replay_f = search_f(slices["replay"], full, deps.policy)["f"] if slices["replay"] else None
     arms: dict[str, dict] = {}
     total_tokens = 0
+    # 聚合预算：每轮只隔离搜索缓存，token/搜索次数/总时限仍由同一个 Budget 累计
+    eval_budget = Budget(limits={"tokens": 1_000_000, "search_calls": 400, "wall_clock_s": 3600})
     for arm, cfg in (("base", base), ("cand", cand)):
         hint = cfg.get("expert_hints", {}).get(expert) or run.diff["hint"]["old"]
         per: dict[str, list[float]] = {k: [] for k in live if live[k]}
@@ -438,12 +453,11 @@ def _evaluate_hint(deps, ledger: Ledger, run: Run, base: dict, cand: dict, log: 
             # 每轮独立 Harness + 命名空间：搜索不能命中上一轮缓存，REPEATS 才是独立样本，
             # 否则波动恒为 0、噪声门控被架空
             h = deps.harness(f"rsi-{run.run_id}-{arm}-{rep}", "standard", date.today(),
-                             Budget(limits={"tokens": 1_000_000, "search_calls": 400, "wall_clock_s": 3600}),
-                             node="rsi_eval", principal="evaluator",
+                             eval_budget, node="rsi_eval", principal="evaluator",
                              namespace=f"rsi-eval-{run.run_id}-{arm}-{rep}")
             for name in per:
                 per[name].append(mean(_hint_score(h, deps, expert, hint, it, {**deps.policy.search, **cfg}) for it in live[name]))
-            total_tokens += int(h.budget.used.get("tokens", 0))
+            total_tokens = int(eval_budget.used.get("tokens", 0))
             log(f"S3 评测 {arm} 第 {rep + 1}/{REPEATS} 轮完成")
         stats = {k: _stat(v) for k, v in per.items()}
         if replay_f is not None:      # 搜索侧重不影响已缓存的回放结果：两边相同，只用于确认没换尺子

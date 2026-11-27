@@ -152,7 +152,8 @@ def cached_results(repo) -> dict[str, list[dict]]:
     每行带上缓存键里的搜索时点 `_cache_as_of`；日期晚于该时点的结果线上拿不到，直接剔除。
     """
     best: dict[tuple[str, str, str], tuple[tuple, list[dict]]] = {}
-    for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0, "key": 1, "value": 1}):
+    for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}},
+                                  projection={"_id": 0, "key": 1, "value": 1, "expires_at": 1}):
         parsed = _search_key_parts(doc["key"])
         if parsed is None or parsed[0] != "user":
             continue                       # 评测命名空间的搜索结果不进入用户坏案例/统计
