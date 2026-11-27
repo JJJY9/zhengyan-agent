@@ -5,7 +5,7 @@ import { StatusBadge } from "../components/Badge";
 import ExpertTeam from "../components/ExpertTeam";
 import RoutingCard from "../components/RoutingCard";
 import TraceView from "../components/TraceView";
-import { BUDGET_LABEL, fmtTime, hasAshareCode, MODE_LABEL, nodeLabel, ROUTE_LABEL } from "../format";
+import { ashareCodes, BUDGET_LABEL, fmtTime, hasAshareCode, MODE_LABEL, nodeLabel, ROUTE_LABEL } from "../format";
 import type { AuditRecord, ExpertResult, RouteDecision, Task, WorkingItem } from "../types";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -98,6 +98,10 @@ export default function TaskDetail() {
   if (error && error.id === id) return <div className="page"><div className="error">{error.msg}</div></div>;
   if (!task) return <div className="page muted">加载中…</div>;
   const budget = task.result?.budget;
+  const redacted = task.request.redacted ?? task.request.question.includes("[已脱敏]");
+  const qCodes = ashareCodes(task.request.question);
+  const multiIssue = (task.error ?? "").includes("多个股票代码")
+    || (!task.request.ticker && !redacted && qCodes.length > 1);
   const routing = (work.find((w) => w.kind === "routing")?.data ?? task.result?.routing) as RouteDecision | undefined;
   const escalated = task.events?.some((e) => e.node === "quality_gate" && e.message.includes("升级"));
   const finalRouting = task.result?.routing ?? (escalated && routing ? { ...routing, route: "deep", escalated_from: "standard", source: "escalation" } as RouteDecision : routing);
@@ -118,6 +122,9 @@ export default function TaskDetail() {
       {actionErr && <div className="error">{actionErr}</div>}
       <div className="card">
         <div className="kv"><span>问题</span><b>{task.request.question}</b></div>
+        <div className="kv"><span>标的</span>{task.request.ticker
+          ? <b>{task.request.ticker}{task.request.redacted && !hasAshareCode(task.request.question) ? "（脱敏后推断）" : ""}</b>
+          : <span className="muted">未识别</span>}</div>
         <div className="kv"><span>数据截至</span>{task.request.as_of ? `${task.request.as_of}（只用这天及之前公开的信息）` : "今天（使用最新可得的信息）"}</div>
         <div className="kv"><span>研究方式</span>{task.request.route === "auto" ? "由系统根据问题自动选择" : `${ROUTE_LABEL[task.request.route]}（你指定的）`}</div>
         <div className="kv"><span>任务编号</span><span className="muted small">{task.task_id}</span></div>
@@ -159,12 +166,12 @@ export default function TaskDetail() {
             {retrying ? "正在发起…" : "按原参数重新发起"}
           </button>
           <span className="muted small">
-            {(task.error ?? "").includes("多个股票代码")
-              ? <>问题里出现了多个股票代码：重试不会自行变好，请<Link to="/new">去新研究</Link>里只写一个 6 位代码</>
+            {multiIssue
+              ? <>问题里点名了多个股票代码：重试不会自行变好，请<Link to="/new">去新研究</Link>里只写一个 6 位代码</>
               : task.request.ticker || hasAshareCode(task.request.question)
                 ? "用已保存的请求（问题为脱敏后的文本）发起一个新任务"
-                : task.request.question.includes("[已脱敏]")
-                  ? <>问题中的数字已被脱敏，重试无法恢复标的；请<Link to="/new">去新研究</Link>写明 6 位代码</>
+                : redacted
+                  ? <>问题中的数字已被脱敏；若问题里没有公司名，重试将无法识别标的——请<Link to="/new">去新研究</Link>写明 6 位代码</>
                   : /未能识别/.test(task.error ?? "")
                     ? <>上次未识别到股票代码；重试将重新识别标的（问题里的公司名可识别即可），若仍失败可<Link to="/new">去新研究</Link>写明 6 位代码</>
                     : "用已保存的请求发起新任务，将重新识别标的（问题里的公司名可识别即可）"}

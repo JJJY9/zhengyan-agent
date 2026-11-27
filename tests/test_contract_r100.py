@@ -9,14 +9,15 @@ from advisor.contracts import ResearchRequest
 from advisor.graph.deps import build_deps
 from advisor.graph.nodes import _codes_of, _codes_of_loose
 from advisor.graph.runner import ResearchService
-from tests.fakes import CODE, NAME, FakeLLM, FakeSource, FakeWebTools, as_of
+from tests.fakes import CODE, NAME, FakeDecision, FakeLLM, FakeSource, FakeWebTools, as_of
 
 NBSP = " "
 ZWSP = "\u200b"
 
 
 def _svc(repo, policy, **kw):
-    deps = build_deps(repo, FakeLLM(), policy, source=FakeSource(), web_tools=FakeWebTools())
+    decision = kw.pop("decision", None)
+    deps = build_deps(repo, FakeLLM(), policy, source=FakeSource(), web_tools=FakeWebTools(), decision=decision)
     return ResearchService(deps, InMemorySaver(), **kw)
 
 
@@ -123,3 +124,84 @@ def test_explicit_ticker_conflict_is_visible(repo, policy):
     task = repo.get_task(tid)
     notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
     assert any("指定标的是 000001" in m and NAME in m for m in notes)
+
+
+def test_strict_money_forms_are_not_codes():
+    """严格解析同样要排除金额/小数：'600519.23元'、'600 519 万元'、'600519美元' 不是标的。"""
+    assert _codes_of("我房贷600 519.23元怎么办？") == set()
+    assert _codes_of("我的房贷余额600519.23元怎么办？") == set()
+    assert _codes_of("我存款600519美元怎么办？") == set()
+    assert _codes_of("我持仓600519股成本价30元") == {"600519"}          # 『股』仍是确定性例外
+    assert _codes_of("复核 600519 半年报业绩") == {"600519"}
+
+
+def test_strict_amount_not_bound_end_to_end(repo, policy):
+    """端到端：六位数金额不落盘成 ticker（修复前会静默研究 600519）。"""
+    task = _run(repo, policy, "我的房贷余额600519.23元怎么办？")
+    assert task["status"] == "failed"
+    assert task["request"].get("ticker") is None
+
+
+def test_amount_does_not_override_name_resolution(repo, policy):
+    """金额形态的六位数不得压制名称解析：问题点名了已跟踪公司时按公司研究。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run(repo, policy, f"我持有{NAME}，房贷300750万元怎么办？")
+    assert task["status"] == "waiting_approval", task.get("error")     # 敏感问题弹 consent
+    assert task["request"]["ticker"] == CODE                            # 不是金额 300750
+
+
+def test_loose_unit_after_space_and_currency():
+    """宽松兜底的单位判断要跳过空白：'我房贷 300\\n750 元'（R102a 原句）不能拼成 300750；
+    美元/手/份 等币种与数量单位同样排除。"""
+    assert _codes_of_loose("我房贷 300\n750 元，压力大怎么办？") == set()
+    assert _codes_of_loose("我的房贷余额600" + NBSP + "519 元怎么办？") == set()
+    assert _codes_of_loose("我的存款600" + NBSP + "519美元怎么办？") == set()
+    assert _codes_of_loose("我持仓600" + NBSP + "519手") == set()
+    assert _codes_of_loose("我买了600\n519份基金") == set()
+    assert _codes_of_loose("我600" + NBSP + "519股成本价30元怎么办？") == {"600519"}   # 『股』例外
+
+
+def test_loose_hyphen_bridge_rejects_month_year():
+    """连字符桥接只认 3+3：'03-2025'、'01-2345' 这类月-年/编号不能拼成 032025/012345。"""
+    assert _codes_of_loose("03-2025 年报") == set()
+    assert _codes_of_loose("编号01-2345的合同") == set()
+    assert _codes_of_loose("我600-519股成本价30元怎么办？") == {"600519"}
+
+
+def test_loose_rejects_unicode_digit_adjacency():
+    """宽松兜底与严格解析同口径：非 ASCII 数字紧邻不算独立代码。"""
+    assert _codes_of_loose("我持仓٥600 519股") == set()
+    assert _codes_of_loose("我持仓600 519٥股") == set()
+
+
+def test_small_classifier_path_uses_loose_last_resort(repo, policy):
+    """small 分类器路径：代码/名称都解析不到时走大模型，再兜底到宽松拆码。"""
+    decision = FakeDecision()
+    svc = _svc(repo, policy, decision=decision)
+    tid = svc.start(ResearchRequest(question="我600" + NBSP + "519股成本价30元怎么办？",
+                                    as_of=as_of(), route="quick"), background=False)
+    task = repo.get_task(tid)
+    assert task["status"] == "waiting_approval"
+    assert task["request"]["ticker"] == "600519"
+
+
+def test_ambiguous_loose_candidates_listed_in_event(repo, policy):
+    """多拆码候选不猜，并要在 intake 事件里列出候选（便于用户改写）。"""
+    svc = _svc(repo, policy)
+    tid = svc.start(ResearchRequest(question="我600" + NBSP + "519股和300" + NBSP + "750股都有，怎么办？",
+                                    as_of=as_of(), route="quick"), background=False)
+    task = repo.get_task(tid)
+    assert task["status"] == "failed"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("多个候选" in m and "300750" in m and "600519" in m for m in notes)
+
+
+def test_explicit_ticker_conflict_with_code_is_visible(repo, policy):
+    """显式标的与问题里的严格代码冲突：写 intake 事件。"""
+    svc = _svc(repo, policy)
+    tid = svc.start(ResearchRequest(question="600519最近怎么样？", as_of=as_of(), route="quick",
+                                    ticker="000001"), background=False)
+    task = repo.get_task(tid)
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("指定标的是 000001" in m and "600519" in m for m in notes)
