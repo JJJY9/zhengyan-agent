@@ -119,3 +119,15 @@ def test_overfit_gate_flags_undeclared_industry_terms(s3):
     assert not g.passed and "白酒" in g.detail and "基酒" in g.detail
     declared = _lesson_run("白酒企业存货大幅变动", "存货上升时先区分基酒储备与渠道压货")
     assert overfit_gate(declared, {}, runner.ledger).passed
+
+
+def test_hint_eval_searches_use_isolated_scope(s3):
+    """RSI 搜索侧重评测的真实搜索不能写用户命名空间：不进坏案例采集与 S3 回放。"""
+    from advisor.rsi.issues import _search_key_parts, cached_results
+
+    deps, runner = s3
+    run = runner.propose("S3")
+    runner.evaluate(run.run_id)
+    scopes = {_search_key_parts(d["key"])[0] for d in deps.repo.db.cache.find({"key": {"$regex": "^ds:search:"}})}
+    assert any(s.startswith("rsi-eval-") for s in scopes)         # 评测搜索带隔离 scope
+    assert not any("公告原文" in q for q in cached_results(deps.repo))   # 评测查询不进用户坏案例

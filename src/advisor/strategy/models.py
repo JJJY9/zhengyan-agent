@@ -3,11 +3,10 @@
 策略卡把「什么情况下纳入 / 移出观察组合」写成显式规则，只读档案与 A 级证据，不读模型的自由发挥。
 策略卡只在模拟盘上运行，系统不执行任何真实交易；晋级须过门控并由人批准，可回滚。
 """
-import re
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from advisor.rsi.models import GateResult
 
@@ -58,14 +57,6 @@ class StrategySpec(BaseModel):
     max_positions: int = Field(default=5, ge=1, le=20)
     stop_loss_pct: float | None = Field(default=15, gt=0, le=80)
     max_drawdown_limit: float = Field(default=20, gt=0, le=100, description="晋级门控：模拟净值最大回撤上限 %")
-
-    @field_validator("universe")
-    @classmethod
-    def _user_keys_only(cls, v: list[str]) -> list[str]:
-        bad = [k for k in v if not re.fullmatch(r"[0-9]{6}", k)]
-        if bad:
-            raise ValueError(f"候选股票必须是不带命名空间的 6 位代码：{bad[:3]}")
-        return v
 
 
 class StrategyVersion(StrategySpec):

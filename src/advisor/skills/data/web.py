@@ -137,9 +137,12 @@ def build_web_skills(tools: DeepSeekTools, repo: Repository | None, policy, para
     def search(inp: SearchIn) -> SearchOut:
         rerank_min = inp.rerank_min if inp.rerank_min is not None else float(params().get("rerank_min", 1.5))
         final_query = build_query(inp.query, inp.as_of, inp.lookback_days, policy.block_sites)
-        # 缓存带命名空间 provenance：评测任务（eval-*）的搜索结果不能驱动 RSI 坏案例/统计
-        scope = (current_namespace.get() or "user").replace(":", "_")
-        key = f"ds:search:{scope}:{inp.as_of}:{inp.count}:{final_query}"
+        # 缓存带命名空间 provenance：评测任务（eval-*）的搜索结果不能驱动 RSI 坏案例/统计。
+        # 用户命名空间沿用历史键格式——S3 冻结回放按键哈希，改格式会让既有回放签名全部失效；
+        # 只有非用户 scope 才加前缀（scope 内的冒号替换掉，保证键可被解析）。
+        scope = (current_namespace.get() or "").replace(":", "_")
+        prefix = f"{scope}:" if scope else ""
+        key = f"ds:search:{prefix}{inp.as_of}:{inp.count}:{final_query}"
         raw = repo.cache_get(key) if repo else None
         if raw is None:
             raw = tools.search(final_query, inp.count)

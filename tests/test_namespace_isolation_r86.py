@@ -15,11 +15,10 @@ from advisor.harness import Budget
 from advisor.rsi.evaluator import _cached_searches
 from advisor.rsi.issues import _search_key_parts, cached_results
 from advisor.services import Services
-from advisor.strategy import StrategySpec
+from advisor.strategy import StrategySpec, StrategyVersion
 from advisor.strategy.models import Rule
 from advisor.watch.models import Alert
 from advisor.watch.scanner import WatchError
-from pydantic import ValidationError
 from tests.fakes import CODE, FakeLLM, FakeSource, FakeWebTools, as_of
 from tests.test_phase2 import make_service
 
@@ -72,10 +71,20 @@ def test_personal_fit_rejects_namespace_key(repo, policy):
         assert c.get(f"/api/profile/fit/{CODE}").status_code == 200
 
 
-def test_strategy_universe_rejects_namespace_key():
-    with pytest.raises(ValidationError):
-        StrategySpec(name="隔离测试", thesis="评测档案不能进入用户策略卡的候选股票列表",
-                     universe=[f"eval-x:{CODE}"], entry=[Rule(field="status", op="==", value="committed")])
+def test_strategy_universe_rejects_namespace_key(repo, policy):
+    from advisor.services import Services
+    from advisor.strategy import StrategyError
+
+    svc = make_service(repo, policy)
+    services = Services(svc.deps, svc)
+    bad = StrategySpec(name="隔离测试", thesis="评测档案不能进入用户策略卡的候选股票列表",
+                       universe=[f"eval-x:{CODE}"], entry=[Rule(field="status", op="==", value="committed")])
+    with pytest.raises(StrategyError, match="6 位"):
+        services.strategy.create(bad, "owner", "评测档案不能进入用户策略卡的候选股票列表")
+    # 历史脏数据：读库不校验，取档时过滤命名空间 key，避免整页 500
+    card = StrategyVersion(**{**bad.model_dump(), "card_id": "SC-X", "version": 1, "change_reason": "历史脏数据读取容错测试用例",
+                              "sha256": "deadbeef", "created_by": "owner", "created_at": datetime.now(timezone.utc)})
+    assert services.strategy.paper.universe(card) == []
 
 
 def test_search_cache_provenance_and_rsi_scope(repo, policy):
@@ -130,7 +139,7 @@ def test_compare_runs_while_interactive_gate_full(repo, policy):
     svc = ResearchService(deps, InMemorySaver(), max_pending=1)
     svc._acquire_or_raise()
     try:
-        rid = run_compare(svc, [CASE], ["quick"])             # 名额已满时评测照常完成
+        rid = run_compare(svc, [CASE], ["standard", "deep"])  # 名额已满时评测照常完成（含深研专家）
         run = repo.get_eval(rid)
         assert run["status"] == "done", run.get("error")
         assert not [r for r in run["results"] if r.get("error")], run["results"]

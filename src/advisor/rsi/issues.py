@@ -1,5 +1,6 @@
 """① 收集坏案例：从质询裁决、核验结果、路由评测、搜索记录里自动登记，强制四要素。"""
 import hashlib
+import json
 import re
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
@@ -124,19 +125,25 @@ def host_of(url: str) -> str:
 _SEARCH_KEY_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _search_key_parts(key: str) -> tuple[str, str, str] | None:
-    """解析 ds:search 缓存键 → (scope, as_of, query)。
+def _search_key_parts(key: str) -> tuple[str, str, str, str] | None:
+    """解析 ds:search 缓存键 → (scope, as_of, count, query)。
 
-    新格式 ds:search:<scope>:<as_of>:<count>:<query>；历史格式 ds:search:<as_of>:<count>:<query>
+    带 scope 的格式 ds:search:<scope>:<as_of>:<count>:<query>：按字段位置判定（第 4 段是日期、
+    第 5 段是计数），日期形 scope 不会被误判；历史格式 ds:search:<as_of>:<count>:<query>
     视为用户命名空间（scope="user"）。"""
     parts = key.split(":", 5)
     if (len(parts) >= 6 and parts[0] == "ds" and parts[1] == "search"
-            and _SEARCH_KEY_DATE.fullmatch(parts[3]) and not _SEARCH_KEY_DATE.fullmatch(parts[2])):
-        return parts[2], parts[3], parts[5]
-    parts = key.split(":", 4)
-    if len(parts) == 5 and parts[0] == "ds" and parts[1] == "search" and _SEARCH_KEY_DATE.fullmatch(parts[2]):
-        return "user", parts[2], parts[4]
+            and _SEARCH_KEY_DATE.fullmatch(parts[3]) and parts[4].isdigit()):
+        return parts[2], parts[3], parts[4], parts[5]
+    legacy = key.split(":", 4)
+    if (len(legacy) == 5 and legacy[0] == "ds" and legacy[1] == "search"
+            and _SEARCH_KEY_DATE.fullmatch(legacy[2]) and legacy[3].isdigit()):
+        return "user", legacy[2], legacy[3], legacy[4]
     return None
+
+
+def _raw_digest(raw) -> str:
+    return hashlib.sha256(json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def cached_results(repo) -> dict[str, list[dict]]:
@@ -145,12 +152,17 @@ def cached_results(repo) -> dict[str, list[dict]]:
     每行带上缓存键里的搜索时点 `_cache_as_of`；日期晚于该时点的结果线上拿不到，直接剔除。
     """
     out: dict[str, list[dict]] = {}
+    seen: set[tuple[str, str, str]] = set()
     for doc in repo.db.cache.find({"key": {"$regex": "^ds:search:"}}, projection={"_id": 0, "key": 1, "value": 1}):
         parsed = _search_key_parts(doc["key"])
         if parsed is None or parsed[0] != "user":
             continue                       # 评测命名空间的搜索结果不进入用户坏案例/统计
-        _, as_of, query = parsed
+        _, as_of, _count, query = parsed
         q = _QUERY_SUFFIX.split(query)[0].strip()
+        dedupe = (as_of, q, _raw_digest(doc.get("value") or []))
+        if dedupe in seen:                 # 历史键与 scope 键并存时不重复计数（阈值/分母不能被放大）
+            continue
+        seen.add(dedupe)
         rows = [{**r, "_cache_as_of": as_of} for r in doc.get("value") or []]
         out.setdefault(q, []).extend(r for r in rows if not _after_as_of(r))
     return out

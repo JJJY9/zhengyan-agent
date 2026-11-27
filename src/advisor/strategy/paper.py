@@ -76,7 +76,8 @@ class PaperBook:
         return facts, d, ev_ids[:6]
 
     def universe(self, card: StrategyVersion) -> list[str]:
-        return card.universe or [d["key"] for d in self.deps.repo.list_dossiers()]
+        keys = card.universe or [d["key"] for d in self.deps.repo.list_dossiers()]
+        return [k for k in keys if ":" not in k]   # 历史脏数据容错：评测命名空间 key 不参与取档
 
     # ---------- 推进一天 ----------
     def step(self, card: StrategyVersion, day: date) -> NavPoint:
