@@ -35,7 +35,7 @@ _MONEY_WORDS = ("美元", "港元", "港币", "人民币")
 _UNIT_ALWAYS = "份块%％"
 _FORMAT_CHARS = "\u200b\u200c\u200d\ufeff"
 _MONEY_HEADS = "￥¥$€"
-_MONEY_STARTERS = "元万亿千%％手份块股百"
+_MONEY_STARTERS = "元万亿千%％手份块股"
 
 
 def _is_cjk(ch: str) -> bool:
@@ -66,7 +66,7 @@ def _digits_money_context(s: str, k: int) -> bool:
         return True
     if ch in _MONEY_STARTERS:
         return True
-    return any(s.startswith(w, k) for w in ("美元", "港元", "港币", "人民币"))
+    return any(s.startswith(w, k) for w in ("百万", "百亿", "百元", "美元", "港元", "港币", "人民币"))
 
 
 def _money_tail(s: str, i: int) -> bool:
@@ -85,14 +85,17 @@ def _money_tail(s: str, i: int) -> bool:
         if not m:
             return False
         after = k + m.end()
-        if re.match(r"(元|万元|亿元|千元|百万元|美元|港元|港币|人民币)", s[_next_visible(s, after):]):
+        if _unit_at(s, after):
             return True
         return len(m.group()) <= 2 and _digits_money_context(s, after)
     if ch in ",，":
         m = re.match(r"[,，]([0-9]+)", s[j:])
-        if not m or len(m.group(1)) > 2:
+        if not m:
             return False
-        return _digits_money_context(s, j + m.end())
+        end = j + m.end()
+        if len(m.group(1)) > 2:
+            return _unit_at(s, end)   # 千分位/长小数：只有紧跟单位才算金额
+        return _digits_money_context(s, end)
     if any(s.startswith(w, j) for w in _UNIT_COMPOUND):
         return True                          # 复合单位在裸乘数之前判断（万亿/千万元/百万元）
     if ch in "万亿千":
@@ -123,6 +126,20 @@ def _money_head(s: str, i: int) -> bool:
     start = j + 1 - 3
     if start >= 0 and s[start:j + 1] == "人民币":
         return not s[:start].endswith(("数字", "离岸", "在岸", "跨境"))
+    return False
+
+
+def _unit_at(s: str, k: int) -> bool:
+    """s[k:] 是否以金额/数量单位开头（表驱动，供小数/逗号规则使用）。"""
+    k = _next_visible(s, k)
+    rest = s[k:]
+    if any(rest.startswith(w) for w in _UNIT_COMPOUND + _MONEY_WORDS):
+        return True
+    ch = rest[:1]
+    if ch and (ch in _UNIT_ALWAYS or ch == "元"):
+        return True
+    if ch and ch in "万亿千" and (len(rest) == 1 or not _is_cjk(rest[1:2])):
+        return True
     return False
 
 
@@ -227,6 +244,11 @@ def dossier_key(state: ResearchState) -> str:
     return f"{ns}:{state['ticker']}" if ns else state["ticker"]
 
 
+def _mask_six(text: str) -> str:
+    """敏感问题的落盘文案兜底：6 位及以上数字统一遮蔽（事件/错误与 request 同属持久化数据）。"""
+    return re.sub(r"\d{6,}", "[已脱敏]", text or "")
+
+
 class Nodes:
     def __init__(self, deps: Deps):
         self.d = deps
@@ -276,6 +298,12 @@ class Nodes:
         explicit = state.get("ticker")
         codes, dropped = _codes_with_dropped(qn)   # dropped：被金额/货币上下文排除的六位数（仅用于可见性）
         sensitive_hit = bool(self.guard.find_sensitive(q))
+
+        def say(msg: str) -> None:   # 事件与 error 都是落盘数据：敏感问题统一遮蔽数字
+            self._event(state, "intake", _mask_six(msg) if sensitive_hit else msg)
+
+        def safe(msg: str) -> str:
+            return _mask_six(msg) if sensitive_hit else msg
         # 宽松拆码只作为最后的兜底候选：不并入 codes，不参与模型/名称的优先级；
         # 敏感问题下始终计算（即使已有严格码），仅用于冲突可见性与多候选提示。
         loose = _codes_of_loose(q) if sensitive_hit else set()
@@ -287,7 +315,9 @@ class Nodes:
         out = None
         small_src = None
         if (self.d.policy.intake.get("classifier", "llm") == "small" and h.decision_client is not None
-                and not dropped):   # 有疑似金额候选时交给大模型裁决（small 路径无法补救被守卫丢弃的代码）
+                # 无显式标的且有疑似金额候选时交给大模型裁决（small 路径无法补救被守卫丢弃的代码）；
+                # 已给 explicit 时模型结果不会被采用，保留 small 以免多一次大模型调用
+                and not (dropped and explicit is None)):
             try:
                 out = self._intake_small(h, q, code or name_code, known)
                 if out is not None:
@@ -305,7 +335,7 @@ class Nodes:
             except TaskCancelled:
                 raise
             except Exception as e:  # 识别失败不致命：退回规则
-                self._event(state, "intake", f"自动识别失败，改用规则识别：{e}")
+                say(f"自动识别失败，改用规则识别：{e}")
                 out = IntakeOut()
         model_ticker = _norm_code(out.ticker)
         candidates = codes | dropped
@@ -314,15 +344,22 @@ class Nodes:
                 code, code_src = model_ticker, small_src
             elif _CODE.fullmatch(model_ticker) and (not codes or model_ticker in candidates):
                 # 需要按公司名推断（问题里没有可见代码）或命中疑似金额候选时才轮到模型裁决；
-                # 回显可见代码记 code；模型选中『疑似金额』必须写事件（敏感问题不写数字原文）
-                code = model_ticker
-                if model_ticker in codes:
-                    code_src = "code"
-                else:
-                    code_src = "model"
-                    if model_ticker in dropped:
-                        shown = "（已脱敏）" if sensitive_hit else model_ticker
-                        self._event(state, "intake", f"注意：按模型判断采用疑似金额的六位数 {shown} 作为标的，请核对")
+                # 没有任何本地依据时，模型码必须有公司名支撑（防止幻觉标的上线）
+                accept = True
+                if not codes and model_ticker not in candidates:
+                    accept = bool((out.company_name and out.company_name in qn) or name_hits)
+                if accept:
+                    code = model_ticker
+                    if model_ticker in codes:
+                        code_src = "code"
+                        if len(codes) > 1:
+                            say(f"注意：按模型在多只代码中选择了 {model_ticker}，请核对")
+                    elif model_ticker in dropped:
+                        code_src = "model"
+                        say(f"注意：按模型判断采用疑似金额的六位数 {model_ticker} 作为标的，请核对")
+                    else:
+                        code_src = "model"
+                        say(f"注意：按公司名推断标的 {model_ticker}，请核对")
             elif len(codes) == 1:
                 code, code_src = next(iter(codes)), "code"
             elif name_code:
@@ -331,28 +368,25 @@ class Nodes:
                 # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的。
                 # 严格代码存在时（哪怕多个）一律不用兜底——多码必须显式失败而不是静默选定。
                 code, code_src = next(iter(loose)), "loose"
-                self._event(state, "intake", f"问题中的数字已被脱敏；从拆分数字中识别到标的 {code}，将以它继续（审批时可拒绝）")
+                say(f"问题中的数字已被脱敏；从拆分数字中识别到标的 {code}，将以它继续（审批时可拒绝）")
         if explicit:
             if codes and explicit not in codes:
-                self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里出现代码 "
-                                             f"{'、'.join(sorted(codes))}，将按指定标的继续")
+                say(f"注意：指定标的是 {explicit}，但问题里出现代码 "
+                    f"{'、'.join(sorted(codes))}，将按指定标的继续")
             if name_hits and explicit not in name_hits:
                 names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
-                self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里点名的是 {names}，将按指定标的继续")
+                say(f"注意：指定标的是 {explicit}，但问题里点名的是 {names}，将按指定标的继续")
             if len(loose) == 1 and next(iter(loose)) != explicit:
-                self._event(state, "intake", f"注意：问题中被脱敏的数字里包含标的 {next(iter(loose))}，"
-                                             f"将按指定标的 {explicit} 继续")
+                say(f"注意：问题中被脱敏的数字里包含标的 {next(iter(loose))}，"
+                    f"将按指定标的 {explicit} 继续")
         elif code and len(loose) == 1 and next(iter(loose)) != code:
-            self._event(state, "intake", f"注意：问题中还出现拆码候选 {next(iter(loose))}，未采用（将按 {code} 继续）")
+            say(f"注意：问题中还出现拆码候选 {next(iter(loose))}，未采用（将按 {code} 继续）")
         stray = dropped - ({code} if code else set())
         if stray:
             # 金额守卫是启发式的（如『元件/元旦』词首）：被排除的六位数必须可见，避免改写标的时静默；
             # 敏感问题的数字已被脱敏落盘，事件里不能再出现原文
-            if sensitive_hit:
-                self._event(state, "intake", "注意：问题里另有疑似金额的六位数（已脱敏，未采用）")
-            else:
-                lead = "另有" if code else "出现"
-                self._event(state, "intake", f"注意：问题里{lead}疑似金额的六位数（未采用）：{'、'.join(sorted(stray))}")
+            lead = "另有" if code else "出现"
+            say(f"注意：问题里{lead}疑似金额的六位数（未采用）：{'、'.join(sorted(stray))}")
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
         upd = {
@@ -368,16 +402,16 @@ class Nodes:
         if not code:
             if len(codes) > 1:
                 if loose:
-                    self._event(state, "intake", f"问题里的数字被拆开且出现候选（{'、'.join(sorted(loose))}），未自动选择")
-                upd.update(status="failed", error=f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
-                                                   "请只保留一个或直接写明要研究哪一只")
+                    say(f"问题里的数字被拆开且出现候选（{'、'.join(sorted(loose))}），未自动选择")
+                upd.update(status="failed", error=safe(f"问题里出现多个股票代码（{'、'.join(sorted(codes))}），"
+                                                       "请只保留一个或直接写明要研究哪一只"))
             elif len(loose) > 1:
-                self._event(state, "intake", f"问题里的数字被拆开且出现多个候选（{'、'.join(sorted(loose))}），未自动选择")
+                say(f"问题里的数字被拆开且出现多个候选（{'、'.join(sorted(loose))}），未自动选择")
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
             else:
                 upd.update(status="failed", error="未能识别 A 股代码，请在问题中写明 6 位代码（如 600519）")
-        self._event(state, "intake", f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
-                                     f"问题类型：{INTENT_LABEL.get(intent, intent)}" + ("；问题里含个人信息，已脱敏" if sensitive else ""))
+        say(f"股票 {code or '未识别'}{'（' + out.company_name + '）' if out.company_name else ''}，"
+            f"问题类型：{INTENT_LABEL.get(intent, intent)}" + ("；问题里含个人信息，已脱敏" if sensitive else ""))
         return upd
 
     def _intake_small(self, h, q: str, code: str | None, known: dict[str, str]) -> IntakeOut | None:

@@ -13,13 +13,14 @@ from tests.fakes import FakeLLM, FakeSource, FakeWebTools, as_of
 class _TickerLLM(FakeLLM):
     """intake 返回指定 ticker 的模型桩（其余角色沿用 FakeLLM）。"""
 
-    def __init__(self, ticker: str):
+    def __init__(self, ticker: str, company: str = ""):
         super().__init__()
         self._ticker = ticker
+        self._company = company
 
     def json(self, role, system, user, schema, max_tokens=None):
         if schema is IntakeOut:
-            return IntakeOut(company_name="", ticker=self._ticker, intent="research", focus=""), 50
+            return IntakeOut(company_name=self._company, ticker=self._ticker, intent="research", focus=""), 50
         return super().json(role, system, user, schema, max_tokens)
 
 
@@ -42,7 +43,7 @@ def test_codes_reject_tab_newline_and_unicode_digits():
 
 def test_model_ticker_whitespace_normalized_like_question(repo, policy):
     """模型 ticker 字段里的内部空白（制表符/全角空格）与问题文本同一归一：能识别的就接受。"""
-    task = _run(repo, policy, _TickerLLM("600\t519"), "帮我看看这家公司的近况")
+    task = _run(repo, policy, _TickerLLM("600\t519", company="贵州茅台"), "帮我看看贵州茅台这家公司的近况")
     assert task["status"] == "done", task.get("error")
     assert task["request"]["ticker"] == "600519"
 
