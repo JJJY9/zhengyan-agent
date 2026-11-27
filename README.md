@@ -226,8 +226,8 @@ web/src/
   pages/           落地页、研究台、档案、任务、评测、自进化、订阅与复核、我的约束、策略与模拟盘
   components/      外壳（侧栏/问顾问/溯源抽屉）、RSI、个人情境、策略（规则编辑、净值图）等
 evals/             golden/（计算、路由金标）、cases/（对照用例）
-tests/             480+ 个测试（虚构数据 + 假模型，不联网；含 RSI 闭环、三期订阅/复核、四期模拟盘/晋级/回滚、
-                   任务生命周期与租约回收、评测生命周期与写回防护、证据冲突口径、API 冒烟）
+tests/             640+ 个测试（虚构数据 + 假模型，不联网；含 RSI 闭环、三期订阅/复核、四期模拟盘/晋级/回滚、
+                   任务生命周期与租约回收、评测生命周期与写回防护、证据冲突口径、标的识别契约、API 冒烟）
 ```
 
 ## 开发与质量
@@ -243,10 +243,16 @@ Windows 下虚拟环境命令在 `.venv\Scripts\`（如 `.venv\Scripts\python -m
 
 - **离线可复现**：存储用 mongomock、模型与数据源用假替身，测试不依赖网络与 API Key；计算与门控规则另有金标用例（`evals/golden/`）。
 - **测试地图**（`tests/`，按职责分层，改哪里先跑哪里）：
-  - 单元/契约：`test_harness`（审批/预算/幂等/重试）、`test_evidence*`、`test_compute_golden`、`test_config_*`（配置 fail-closed）。
+  - 单元/契约：`test_harness`（审批/预算/幂等/重试）、`test_evidence*`、`test_compute_golden`、`test_config_*`（配置 fail-closed）、`test_contract_r95/r96/r98/r100`（任务落盘回填、代码形态、金额守卫与名称证据、事件脱敏——标的识别线 R94a-R125a 的全部契约都在这里，改动 `graph/nodes.py` 的解析逻辑必须先跑这一组）。
   - 流程集成：`test_graph_e2e`（SOP→核验→质量门→版本链→审批）、`test_deep_*`、`test_phase2/3/4`、`test_api_journey`（API 八段旅程护栏）。
   - 生命周期/并发回归：`test_task_lifecycle`、`test_eval_lifecycle`、`test_review_and_evidence`、`test_dossier_lineage`、`test_instance_rebind`、`test_window_regressions`、`test_fixwindow_*`（每轮对抗审计的修复回归，按轮次编号保留）。
   - 性质测试（固定种子随机，只断言不变量）：`test_egress_properties_r79`（脱敏：命中即遮蔽/幂等/公开文本不变）、`test_properties_r80`（模拟盘与版本链）、`_r81`（订阅提醒状态机）、`_r82`（评测回收语义表）、`_r83`（RSI 发布/回滚指针）。新增状态机不变量时优先加到这里。
+- **标的识别与金额守卫**（`src/advisor/graph/nodes.py`，R94a-R125a 对抗审计收敛后的定稿口径）：
+  - **解析**：只认 ASCII 数字的 A 股形态（0/3/6/4/8 开头 6 位、92 开头 4 位），代码内允许一个半角/全角空格，前后边界是 Unicode 数字；六位数金额（小数、元/万/亿/千/%/手/份/块、美元/港元/人民币、区间与口语金额如「360-500元」「赚了360多万」）按上下文的 `_money_tail`/`_money_head` 排除，不用作标的。
+  - **优先级**：显式 ticker > 模型（必须有本地依据）> 问题中的唯一严格代码 > 本地档案名（同一句点名多家时显式失败）> 敏感问题被拆开的代码兜底；多代码/多档案名一律显式失败，不静默选一只。
+  - **可见性**：被金额守卫排除的六位数候选写进 intake 事件（敏感问题只报「已脱敏」），模型可以对候选裁决并写核对事件——误伤不会静默改写标的。
+  - **名称证据**：全名包含 / 不含停用行业词且非纯数字的 ≥3 字片段 / 2 字尾简称（词中命中排除：「其中平安」不算、「尤其中石油」算）/ 白名单别名（中石油、中石化、中行、中建）；通用行业词（银行/科技/石油/半导体…）不作证据。
+  - **落盘与展示**：敏感问题的全部 intake 事件与失败 error 统一遮蔽六位以上数字；任务请求记录 ticker 来源（explicit/code/name/model/loose），任务页「标的」行据此标注「推断/脱敏后推断/来自档案」。
 - **CI 三道门**：GitHub Actions 上 pytest、前端构建、ruff 正确性检查，任一失败不得合并。
 - **并发与一致性**：档案版本、策略卡晋级、RSI 运行、订阅复核、后台作业等状态机都有乐观锁 / 唯一索引 / 原子抢占，并配套并发回归测试。
 - **后台任务的运行语义**（详见 `src/advisor/graph/runner.py`、`storage/repository.py`）：
