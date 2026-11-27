@@ -21,8 +21,10 @@ from advisor.skills.research.earnings_review import (
     draft_user_prompt,
 )
 
-_CODE = re.compile(r"(?<!\d)([036]\d{5}|[48]\d{5}|92\d{4})(?!\d)")
-_CODE_SPACED = re.compile(r"(?<!\d)([036]\d{2}\s?\d{3}|[036]\d{5}|[48]\d{5}|92\d{4})(?!\d)")
+_CODE = re.compile(r"(?<![0-9])([036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])")
+# 代码内只允许一个半角/全角空格：\s 还会匹配制表符/换行/NBSP，会把粘贴表格、折行里的
+# 两个无关数字拼成一个"合法"代码，失败路径因此变成静默研究错误公司。
+_CODE_SPACED = re.compile(r"(?<![0-9])([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])")
 _FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
 
 
@@ -31,10 +33,14 @@ def _norm_digits(text: str) -> str:
     return (text or "").translate(_FW_DIGITS)
 
 
+def _norm_code(text: str) -> str:
+    """代码归一：全角数字转半角并去掉全部空白（问题文本与模型 ticker 两个来源共用同一口径）。"""
+    return re.sub(r"\s+", "", _norm_digits(text))
+
+
 def _codes_of(text: str) -> set[str]:
-    """问题中出现的股票代码：允许代码内部一个空白（'600 519'），不把相邻数字误并。
-    去空白用 \\s（含全角空格/制表符/换行）：产物会被持久化进 request.ticker 并要求匹配 ^[0-9]{6}$。"""
-    return {re.sub(r"\s+", "", m.group(1)) for m in _CODE_SPACED.finditer(text or "")}
+    """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。"""
+    return {_norm_code(m.group(1)) for m in _CODE_SPACED.finditer(text or "")}
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
@@ -139,7 +145,7 @@ class Nodes:
             except Exception as e:  # 识别失败不致命：退回规则
                 self._event(state, "intake", f"自动识别失败，改用规则识别：{e}")
                 out = IntakeOut()
-        model_ticker = _norm_digits(out.ticker or "").replace(" ", "").strip()
+        model_ticker = _norm_code(out.ticker)
         if explicit is None:
             if _CODE.fullmatch(model_ticker) and (not codes or model_ticker in codes):
                 code = model_ticker                       # 模型看到上下文：金额里的数字不再被当成代码

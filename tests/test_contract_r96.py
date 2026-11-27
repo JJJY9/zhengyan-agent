@@ -52,9 +52,11 @@ def test_backfill_normalizes_whitespace_and_fullwidth_codes(repo, policy):
     assert req.get("ticker") == "300750"
 
 
-def test_backfill_resolves_unique_known_name(repo, policy):
-    """名称型问题（没有数字代码）：排队中就被取消、intake 未执行的任务也要能凭回填的代码重试。"""
-    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1})
+def test_name_only_question_retries_via_intake(repo, policy):
+    """名称型问题不把档案名写成显式 ticker（R98a：那会越过 intake 的模型解析、可能研究错公司）；
+    排队取消后用保存的请求重试，由 intake 自身的名称兜底落到正确档案。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})   # as_of 晚于任务：不做 prior 装载
     svc = _svc(repo, policy, max_workers=1)
     gate = threading.Event()
     svc._pool.submit(lambda: gate.wait(10))                # 占住唯一 worker：任务保持排队
@@ -63,7 +65,7 @@ def test_backfill_resolves_unique_known_name(repo, policy):
                         background=True)
         task = repo.get_task(tid)
         assert task["status"] == "queued"
-        assert task["request"]["ticker"] == CODE           # 名称回填（与 intake 的 name_code 同逻辑）
+        assert task["request"].get("ticker") is None       # 名称启发式不写成权威值
         svc.deps.repo.request_cancel(tid)
     finally:
         gate.set()
@@ -71,6 +73,13 @@ def test_backfill_resolves_unique_known_name(repo, policy):
     while time.time() < deadline and repo.get_task(tid)["status"] not in ("cancelled", "done", "failed"):
         time.sleep(0.02)
     assert repo.get_task(tid)["status"] == "cancelled"
+    # 按 TaskDetail 的方式用保存的请求重试：intake 的名称解析兜底仍能识别标的
+    req = repo.get_task(tid)["request"]
+    tid2 = svc.start(ResearchRequest(question=req["question"], as_of=req["as_of"], route=req["route"]),
+                     background=False)
+    task2 = repo.get_task(tid2)
+    assert task2["status"] == "done", task2.get("error")
+    assert task2["result"]["dossier_key"] == CODE            # intake 名称解析落到了正确标的
 
 
 def test_watch_review_pool_saturated_releases_alert(repo, policy):

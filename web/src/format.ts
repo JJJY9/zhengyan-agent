@@ -80,9 +80,9 @@ export function zh(text: string | null | undefined): string {
     .replace(/门禁/g, "门控").replace(/(质量|噪声|成本|回归|审批)门(?!控)/g, "$1门控");
 }
 
-// A 股代码形态（与后端 nodes._CODE / _CODE_SPACED 同口径）：0/3/6 开头 6 位、4/8 开头 6 位、
-// 92 开头 4 位；允许代码内一个空白（'600 519'）。全角数字先归一，否则后端能识别的代码前端会漏判。
-const A_SHARE_CODE = /(?<!\d)(?:[036]\d{2}\s?\d{3}|[036]\d{5}|[48]\d{5}|92\d{4})(?!\d)/;
+// A 股代码形态（与后端 nodes._CODE_SPACED 同口径）：只认 ASCII 数字，代码内允许一个半角/全角
+// 空格；制表符/换行等空白不是分隔符（粘贴表格、折行会把无关数字拼成"代码"）。全角数字先归一。
+const A_SHARE_CODE = /(?<![0-9])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])/;
 export function normDigits(q: string): string {
   return q.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 }
@@ -92,4 +92,15 @@ export function ashareCodes(q: string): string[] {
 }
 export function hasAshareCode(q: string): boolean {
   return A_SHARE_CODE.test(normDigits(q));
+}
+/** 页面附带的 ticker 只在问题没有点名其它标的时使用：问题里出现其它 A 股代码，
+ *  或出现其它已跟踪档案的公司名（且未点名页面这只），都视为用户改问了别的股票。 */
+export function resolveSubmitTicker(question: string, pageTicker: string | undefined,
+                                    rows: Array<{ ticker: string; name?: string | null }> | null): string | undefined {
+  if (!pageTicker) return undefined;
+  if (ashareCodes(question).some((c) => c !== pageTicker)) return undefined;
+  const ownName = (rows ?? []).find((r) => r.ticker === pageTicker)?.name;
+  if (ownName && question.includes(ownName)) return pageTicker;
+  const otherName = (rows ?? []).some((r) => r.ticker !== pageTicker && r.name && question.includes(r.name));
+  return otherName ? undefined : pageTicker;
 }

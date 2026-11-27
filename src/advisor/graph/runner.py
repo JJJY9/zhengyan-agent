@@ -108,22 +108,15 @@ class ResearchService:
             request_doc["question"] = self.guard.redact_question(req.question)
             if not request_doc.get("ticker"):
                 # 脱敏后问题里的代码可能被遮蔽：落盘时就把解析结果写进请求（只存代码不存原文），
-                # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试
+                # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试。
+                # 只回填唯一且形态合法的代码；名称解析留给 intake（回填成显式 ticker 会越过模型
+                # 解析，问题提到多家公司时重试会研究错标的）。R98a 审计：不要把名称启发式写成权威值。
                 from advisor.graph.nodes import _CODE, _codes_of, _norm_digits
-                qn = _norm_digits(req.question)
-                codes = _codes_of(qn)
+                codes = _codes_of(_norm_digits(req.question))
                 if len(codes) == 1:
                     code = next(iter(codes))
                     if _CODE.fullmatch(code):          # 持久化产物必须能通过 request.ticker 的 ^[0-9]{6}$
                         request_doc["ticker"] = code
-                elif not codes:
-                    # 名称回填（与 intake 的 name_code 同逻辑）：问题里唯一命中已有档案名时落盘代码，
-                    # 名称型问题的排队取消任务也能重试；多个名称命中不猜
-                    names = {d["ticker"]: (d.get("name") or "")
-                             for d in self.deps.repo.list_dossiers() if d.get("ticker")}
-                    hits = {t for t, n in names.items() if n and n in qn}
-                    if len(hits) == 1:
-                        request_doc["ticker"] = hits.pop()
             self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}),
                                        instance=self.instance)
             payload = {
