@@ -28,7 +28,9 @@ _CODE = re.compile(r"(?<!\d)([036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?!\d)")
 # 非 ASCII 数字紧邻时不算代码（'٥600519' 不能被截成 600519）。
 _CODE_SPACED = re.compile(r"(?<!\d)([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?!\d)")
 _FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
-_LOOSE_DIGIT_GAP = re.compile(r"(?<=[0-9０-９])\s+(?=[0-9０-９])")
+_DIGIT_TOKEN = re.compile(r"[0-9]+")
+_LOOSE_SEP_GAP = re.compile(r"[\s​-‍﻿\-–—－~·•]+")
+_UNIT_TAIL = "元万亿%％"
 
 
 def _norm_digits(text: str) -> str:
@@ -47,9 +49,28 @@ def _codes_of(text: str) -> set[str]:
 
 
 def _codes_of_loose(text: str) -> set[str]:
-    """敏感问题的兜底解析：数字间的任意空白先合并（与 egress 的整段归一一致）再找代码。
-    只在严格解析为空且问题含敏感信息时使用——此时数字已被整段遮蔽，宽松合并是找回标的的唯一途径。"""
-    return _codes_of(_LOOSE_DIGIT_GAP.sub("", _norm_digits(text)))
+    """敏感问题的兜底解析：相邻两个数字片段只由空白/全角空格/零宽/连字符等分隔、
+    拼接后恰为合法代码、且后面不跟金额/百分比单位（元/万/亿/%）时视为标的。
+    不做整串合并——那样会把日期对（2024-12-31 / 2025-01-02）或股数粘成假代码；
+    '我600\xa0519股' 能找回，'我的房贷余额600\xa0519元' 不会把余额当标的。"""
+    s = _norm_digits(text or "")
+    toks = [(m.start(), m.end()) for m in _DIGIT_TOKEN.finditer(s)]
+    date_seps = "-–—－/."
+    out: set[str] = set()
+    for (a1, a2), (b1, b2) in zip(toks, toks[1:]):
+        if not _LOOSE_SEP_GAP.fullmatch(s[a2:b1]):
+            continue
+        joined = s[a1:a2] + s[b1:b2]
+        if not _CODE.fullmatch(joined):
+            continue
+        tail = s[b2:b2 + 1]
+        if tail and tail in _UNIT_TAIL:
+            continue
+        # 日期片段不是标的：'2024-12-31\n2025-01-02' 的 31+2025 不能拼成 312025
+        if (a1 and s[a1 - 1] in date_seps) or (tail and tail in date_seps):
+            continue
+        out.add(joined)
+    return out
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
@@ -133,10 +154,9 @@ class Nodes:
         explicit = state.get("ticker")
         codes = _codes_of(qn)
         sensitive_hit = bool(self.guard.find_sensitive(q))
-        if not codes and sensitive_hit:
-            # 敏感问题的数字会被 redact_question 整段遮蔽：NBSP/换行/制表符拆开的代码
-            # 严格正则认不出，模型也看不到原文——用 egress 同口径的宽松合并兜底找回标的。
-            codes = _codes_of_loose(q)
+        # 宽松拆码只作为最后的兜底候选：不并入 codes，不参与模型/名称的优先级
+        # （错把房贷余额/日期对当代码会静默研究错公司）
+        loose = _codes_of_loose(q) if (not codes and sensitive_hit) else set()
         code = explicit or (next(iter(codes)) if len(codes) == 1 else None)   # 多个代码不硬猜，交给模型/澄清
         known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
         name_code = next((t for t, n in known.items() if n and n in qn), None)   # 名字先本地解析，脱敏后模型看不到也能识别
@@ -167,6 +187,17 @@ class Nodes:
                 code = next(iter(codes))
             elif name_code:
                 code = name_code
+            elif len(loose) == 1:
+                # 数字被整段脱敏后模型也看不到原文：拆码兜底放到最后，且审批时会展示标的
+                code = next(iter(loose))
+                self._event(state, "intake", f"问题中的数字已被脱敏；从拆分数字中识别到标的 {code}，将以它继续（审批时可拒绝）")
+        if explicit and name_code and name_code != explicit:
+            # 页面/请求指定的标的与问题点名的公司不一致：即使 small 分类器路径也要可见
+            self._event(state, "intake", f"注意：指定标的是 {explicit}，但问题里点名的是 "
+                                         f"{known.get(name_code) or ''}（{name_code}），将按指定标的继续")
+        if explicit and len(loose) == 1 and next(iter(loose)) != explicit:
+            self._event(state, "intake", f"注意：问题中被脱敏的数字里包含标的 {next(iter(loose))}，"
+                                         f"将按指定标的 {explicit} 继续")
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
         sensitive = sensitive_hit
         upd = {
@@ -207,11 +238,13 @@ class Nodes:
         if state.get("intent") == "trade_execution":
             notes.append("本系统仅做研究与模拟，不执行任何买卖或资金动作；以下只解释事实与情景。")
         if state.get("sensitive"):
-            decision = interrupt({
-                "type": "consent",
-                "message": "问题中包含个人财务/账户信息。当前不做个人情境分析：这些信息会被脱敏，不会发往搜索，"
-                           "也不会用于结论。是否继续只做公开信息研究？",
-            })
+            ticker = state.get("ticker")
+            message = ("问题中包含个人财务/账户信息。当前不做个人情境分析：这些信息会被脱敏，不会发往搜索，"
+                       "也不会用于结论。是否继续只做公开信息研究？")
+            if ticker:
+                # 标的可能是从被脱敏的数字里识别出来的：审批时展示，错了可以直接拒绝并改写问题
+                message += f"（本次将以 {ticker} 为标的继续；如不对请拒绝并改写问题。）"
+            decision = interrupt({"type": "consent", "message": message})
             if not (isinstance(decision, dict) and decision.get("approve")):
                 self._event(state, "authorize", "用户拒绝，任务停止")
                 return {"status": "cancelled"}
