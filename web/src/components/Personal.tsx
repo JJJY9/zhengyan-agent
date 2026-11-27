@@ -68,7 +68,7 @@ export function PersonalPanel({ ticker, version }: { ticker: string; version?: n
         </span>
       </div>
       {msg && <p className="muted small">{msg}</p>}
-      {change && (
+      {change && (change.dossier_version == null || version === undefined || change.dossier_version === version) && (
         <div className="impact-note">
           <b>你在约束 v{change.profile_version} 里做了修改，这份档案的个人情境结论因此变了：</b>
           <ImpactChanges x={change} />

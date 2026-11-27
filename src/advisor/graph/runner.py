@@ -106,6 +106,13 @@ class ResearchService:
             # 任务请求会长期留在任务列表/导出里：含个人信息的问句按 consent 承诺脱敏后落盘
             request_doc = req.model_dump(mode="json")
             request_doc["question"] = self.guard.redact_question(req.question)
+            if not request_doc.get("ticker"):
+                # 脱敏后问题里的代码可能被遮蔽：落盘时就把解析结果写进请求（只存代码不存原文），
+                # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试
+                from advisor.graph.nodes import _codes_of, _norm_digits
+                codes = _codes_of(_norm_digits(req.question))
+                if len(codes) == 1:
+                    request_doc["ticker"] = next(iter(codes))
             self.deps.repo.create_task(task_id, request_doc | ({"namespace": namespace} if namespace else {}),
                                        instance=self.instance)
             payload = {

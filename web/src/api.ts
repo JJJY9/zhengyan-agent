@@ -1,5 +1,11 @@
 import type { Alert, Health, PersonalFit, ProfileState, ProfileVersion, StrategyCard, StrategyEvent, StrategyOverview, StrategySpec, NavPoint, PaperTrade, Subscription, Holding, RiskProfile, AuditRecord, Dossier, DossierDiff, EvalRun, Evidence, Meta, RsiAsset, RsiEvent, RsiIssue, RsiJob, RsiOverview, RsiRun, Task, WatchRow, WorkingItem, ProfileImpact } from "./types";
 
+const FIELD_LABEL: Record<string, string> = {
+  name: "名称", thesis: "策略逻辑", universe: "候选股票", entry: "纳入条件", exit: "移出条件",
+  max_positions: "最多持有", stop_loss_pct: "止损 %", max_drawdown_limit: "晋级回撤上限 %",
+  change_reason: "改动理由", question: "问题", ticker: "股票代码", as_of: "数据截至", routes: "评测方式",
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...init });
   if (res.status === 401 && path !== "/api/login") toLogin();
@@ -10,7 +16,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     const msg = typeof detail === "string" ? detail
       : Array.isArray(detail)
         ? detail.map((d) => {
-          const loc = Array.isArray((d as { loc?: unknown[] }).loc) ? (d as { loc: unknown[] }).loc.slice(1).join(".") : "";
+          const parts = Array.isArray((d as { loc?: unknown[] }).loc) ? (d as { loc: unknown[] }).loc.slice(1) : [];
+          const loc = parts.map((p) => FIELD_LABEL[String(p)] ?? String(p)).join(".");
           return `${loc ? loc + "：" : ""}${(d as { msg?: string }).msg ?? ""}`;
         }).join("；")
         : `HTTP ${res.status}`;

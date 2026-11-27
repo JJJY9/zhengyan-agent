@@ -127,7 +127,7 @@ function ProfileVersionView({ v, prev, current }: { v: ProfileVersion; prev?: Pr
           <div className="kv"><span>受影响的档案</span>{v.impact.length === 0 ? <span className="muted">没有档案的个人情境结论因此改变</span> : (
             <div className="pv-impact">{v.impact.map((x) => (
               <div key={x.ticker}>
-                <Link to={`/dossiers/${x.ticker}`}><b>{x.name || x.ticker}</b></Link> <span className="muted small">{x.ticker} · 档案 v{x.dossier_version}</span>
+                <Link to={`/dossiers/${x.ticker}/${x.dossier_version}`}><b>{x.name || x.ticker}</b></Link> <span className="muted small">{x.ticker} · 档案 v{x.dossier_version}</span>
                 <ImpactChanges x={x} />
               </div>
             ))}</div>

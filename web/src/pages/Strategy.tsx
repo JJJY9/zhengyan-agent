@@ -15,6 +15,7 @@ export default function Strategy() {
   const [ov, setOv] = useState<StrategyOverview | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uniErr, setUniErr] = useState("");
   const [log, setLog] = useState("");
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -55,6 +56,11 @@ export default function Strategy() {
       if (mdd === null || mdd <= 0 || mdd > 100) {
         setError("晋级回撤上限 % 必须是 (0,100] 的数字"); setBusy(false); return;
       }
+      const uni = universe.split(/[,，、\s]+/).filter(Boolean);
+      const badUni = uni.filter((k) => !/^\d{6}$/.test(k));
+      if (badUni.length) {
+        setUniErr("候选股票需为 6 位代码，用逗号或顿号分隔"); setBusy(false); return;
+      }
       const cast = (rules: Rule[]): Rule[] => rules.map((r) => (r.field === "status" ? r : { ...r, value: Number(r.value) }));
       for (const r of [...rest.entry, ...rest.exit]) {
         if (r.field !== "status" && (String(r.value).trim() === "" || !Number.isFinite(Number(r.value)))) {
@@ -65,7 +71,7 @@ export default function Strategy() {
       }
       const v = await api.strategy.create({ ...rest, max_positions: maxPos, stop_loss_pct: stop, max_drawdown_limit: mdd,
                                            entry: cast(rest.entry), exit: cast(rest.exit),
-                                           universe: universe.split(/[,，\s]+/).filter(Boolean) });
+                                           universe: uni });
       nav(`/strategy/${v.card_id}/${v.version}`);
     } catch (e) { setError((e as Error).message); setBusy(false); }
   };
@@ -87,7 +93,11 @@ export default function Strategy() {
             <h3 style={{ margin: 0 }}>新建策略卡</h3>
             <div className="two-col">
               <label>名称<input value={form.name} maxLength={40} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-              <label>候选股票（空 = 全部有档案的股票）<input value={form.universe} placeholder="600519, 300750" onChange={(e) => setForm({ ...form, universe: e.target.value })} /></label>
+              <label>候选股票（空 = 全部有档案的股票）
+                <input value={form.universe} placeholder="600519, 300750"
+                       onChange={(e) => { setUniErr(""); setForm({ ...form, universe: e.target.value }); }} />
+                {uniErr && <span className="warn-text small">{uniErr}</span>}
+              </label>
             </div>
             <label>策略逻辑：为什么这些规则有意义<textarea rows={2} value={form.thesis} onChange={(e) => setForm({ ...form, thesis: e.target.value })} /></label>
             <div><div className="muted small" style={{ marginBottom: 6 }}>纳入条件（全部满足）</div>
