@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from advisor.api.common import Jobs, Svc, conflict_on
+from advisor.graph.runner import PoolSaturated
 from advisor.watch import WatchError
 
 router = APIRouter(prefix="/api/watch")
@@ -63,8 +64,11 @@ def review(alert_id: str, svc: Svc):
     from advisor.llm import LLMNotConfigured
     if svc.watch.store.get_alert(alert_id) is None:
         raise HTTPException(404, "提醒不存在")
-    with conflict_on(WatchError, LLMNotConfigured):
-        return {"task_id": svc.watch.start_review(alert_id, svc.research)}
+    try:
+        with conflict_on(WatchError, LLMNotConfigured):
+            return {"task_id": svc.watch.start_review(alert_id, svc.research)}
+    except PoolSaturated as e:                     # 研究池已满：与 /api/research 同语义
+        raise HTTPException(429, str(e)) from e
 
 
 @router.post("/alerts/{alert_id}/dismiss")

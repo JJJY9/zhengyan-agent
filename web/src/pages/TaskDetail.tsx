@@ -154,12 +154,19 @@ export default function TaskDetail() {
       {task.error && (task.status === "failed" || task.status === "cancelled")
         && <div className="error">{task.error}</div>}
       {(task.status === "failed" || task.status === "cancelled") && (
-        <div className="row-btns" style={{ margin: "8px 0" }}>
-          <button className="primary" disabled={retrying} onClick={retry}>
-            {retrying ? "正在发起…" : "按原参数重新发起"}
-          </button>
-          <span className="muted small">用已保存的请求（问题为脱敏后的文本）发起一个新任务</span>
-        </div>
+        (task.request.ticker || /(?<!\d)\d{6}(?!\d)/.test(task.request.question)) ? (
+          <div className="row-btns" style={{ margin: "8px 0" }}>
+            <button className="primary" disabled={retrying} onClick={retry}>
+              {retrying ? "正在发起…" : "按原参数重新发起"}
+            </button>
+            <span className="muted small">用已保存的请求（问题为脱敏后的文本）发起一个新任务</span>
+          </div>
+        ) : (
+          <div className="row-btns" style={{ margin: "8px 0" }}>
+            <Link className="button" to="/new">去新研究补填股票代码</Link>
+            <span className="muted small">该任务的问题已被脱敏且不含股票代码，无法按原参数重试</span>
+          </div>
+        )
       )}
 
       {finalRouting && <RoutingCard r={finalRouting} />}

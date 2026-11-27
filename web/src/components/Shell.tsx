@@ -69,8 +69,9 @@ function MoreToggle({ total, open, onToggle }: { total: number; open: boolean; o
   return <button className="sb-more" onClick={onToggle}>{open ? "收起" : `显示更多（还有 ${total - SIDEBAR_LIMIT} 个）`}</button>;
 }
 
-function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi }: {
+function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi, watchErr, onRetryWatch }: {
   collapsed: boolean; onCollapse: () => void; watch: WatchRow[] | null; tasks: Task[]; pendingRsi: number;
+  watchErr: string; onRetryWatch: () => void;
 }) {
   const openAlerts = (watch ?? []).reduce((n, w) => n + (w.open_alerts ?? 0), 0);
   const activeTasks = tasks.filter((t) => ["queued", "running", "waiting_approval"].includes(t.status)).length;
@@ -111,9 +112,12 @@ function Sidebar({ collapsed, onCollapse, watch, tasks, pendingRsi }: {
       </nav>
       <div className="sb-scroll">
         <div className="sb-sec"><span className="grow">我的档案</span></div>
-        <div className="wl-head"><span>标的（{watch?.length ?? 0}）</span><span title="研究当时取到的近 20 个交易日涨跌幅，不是实时行情">近 20 日涨跌</span></div>
+        <div className="wl-head"><span>标的（{watch === null ? (watchErr ? "—" : "…") : watch.length}）</span><span title="研究当时取到的近 20 个交易日涨跌幅，不是实时行情">近 20 日涨跌</span></div>
         <div className="wl-list">
-          {watch === null ? <div className="wl-head">加载中…</div> : watch.length === 0 ? (
+          {watchErr ? (
+            <div className="wl-head" style={{ color: "var(--danger, #c33)" }}>档案列表加载失败（稍后自动重试）
+              <button className="ghost small" onClick={onRetryWatch}>重试</button></div>
+          ) : watch === null ? <div className="wl-head">加载中…</div> : watch.length === 0 ? (
             <div className="wl-head">还没有档案</div>
           ) : visibleWatch.map((w) => {
             const chg = w.quote.chg_20d?.value;
@@ -325,15 +329,26 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const [turns, setTurns] = useState<Turn[]>(() => store("ask-turns", []));
   const [drawer, setDrawer] = useState<{ items: Evidence[]; title: string } | null>(null);
   const [watch, setWatch] = useState<WatchRow[] | null>(null);
+  const [watchErr, setWatchErr] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [pendingRsi, setPendingRsi] = useState(0);
 
+  const loadWatch = useCallback(() => {
+    api.watchlist().then((w) => { setWatch(w); setWatchErr(""); })
+      .catch((e) => setWatchErr((e as Error).message));   // 失败保留旧状态，不能伪装成「还没有档案」
+  }, []);
   const refresh = useCallback(() => {
-    api.watchlist().then(setWatch).catch(() => setWatch([]));
+    loadWatch();
     api.tasks().then(setTasks).catch(() => undefined);
     api.rsi.runs().then((rs) => setPendingRsi(rs.filter((r) => r.status === "review" || r.status === "approved").length)).catch(() => undefined);
-  }, []);
+  }, [loadWatch]);
   useEffect(refresh, [refresh]);
+  // 档案列表加载失败：5 秒后自动重试（恢复后侧栏自动纠正）
+  useEffect(() => {
+    if (!watchErr) return;
+    const timer = window.setTimeout(loadWatch, 5000);
+    return () => window.clearTimeout(timer);
+  }, [watchErr, loadWatch]);
   // 有进行中/待确认任务时每 4 秒刷新一次侧栏计数；全部结束后自动停止
   useEffect(() => {
     if (!tasks.some((t) => ["queued", "running", "waiting_approval"].includes(t.status))) return;
@@ -345,8 +360,9 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   useEffect(() => save("ask-turns", turns.slice(-8)), [turns]);
 
   const submit = useCallback(async (question: string, route: string, as_of: string, ticker?: string) => {
-    // 页面附带的 ticker 只在问题没有点名其它股票时使用：问顾问里写别的代码时不能研究错标的
-    const codes = question.match(/(?<!\d)\d{6}(?!\d)/g) ?? [];
+    // 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用；财务数字（208448 万元）不是代码，
+    // 不能因此丢掉页面上下文（否则后端会「未能识别 A 股代码」）
+    const codes = question.match(/(?<!\d)([036]\d{5}|[48]\d{5}|92\d{4})(?!\d)/g) ?? [];
     const t = ticker && !codes.some((c) => c !== ticker) ? ticker : undefined;
     const { task_id } = await api.research({ question, route, as_of, ticker: t });
     setTurns((ts) => [...ts, { task_id, question, route, as_of, ts: Date.now() }]);
@@ -364,7 +380,8 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   return (
     <ShellCtx.Provider value={apiValue}>
       <div className={`ws ${collapsed ? "side-collapsed" : ""} ${askOpen ? "" : "no-ask"}`}>
-        <Sidebar collapsed={collapsed} onCollapse={() => setCollapsed((c) => !c)} watch={watch} tasks={tasks} pendingRsi={pendingRsi} />
+        <Sidebar collapsed={collapsed} onCollapse={() => setCollapsed((c) => !c)} watch={watch} tasks={tasks}
+                 pendingRsi={pendingRsi} watchErr={watchErr} onRetryWatch={loadWatch} />
         <main className="main">
           {!askOpen && (
             <button className="ask-fab" onClick={() => setAskOpen(true)} title="展开右侧问顾问面板" aria-label="打开问顾问">
