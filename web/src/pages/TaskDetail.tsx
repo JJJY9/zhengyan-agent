@@ -5,7 +5,7 @@ import { StatusBadge } from "../components/Badge";
 import ExpertTeam from "../components/ExpertTeam";
 import RoutingCard from "../components/RoutingCard";
 import TraceView from "../components/TraceView";
-import { ashareCodes, BUDGET_LABEL, fmtTime, hasAshareCode, MODE_LABEL, nodeLabel, ROUTE_LABEL } from "../format";
+import { ashareCodes, BUDGET_LABEL, fmtTime, hasAshareCode, MODE_LABEL, nodeLabel, normDigits, ROUTE_LABEL } from "../format";
 import type { AuditRecord, ExpertResult, RouteDecision, Task, WorkingItem } from "../types";
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -104,9 +104,9 @@ export default function TaskDetail() {
   const multiIssue = (task.error ?? "").includes("多个股票代码")
     || (!task.request.ticker && !redacted && qCodes.length > 1);
   const tickerSrc = task.request.ticker_source;
-  // 字面可见：问题原文（去代码内空格后）含该数字即为可见（含被金额守卫排除的候选）
+  // 字面可见：ticker 作为独立数字出现在问题原文（去代码内空格后；含被金额守卫排除的候选）
   const rawVisible = (t: string) =>
-    task.request.question.replace(/[ 　]/g, "").includes(t) || task.request.question.includes(t);
+    new RegExp(`(?<![0-9])${t}(?![0-9])`).test(normDigits(task.request.question).replace(/[ 　]/g, ""));
   const tickerInferred = task.request.ticker
     ? (tickerSrc
         ? (tickerSrc === "loose" || tickerSrc === "model") && !rawVisible(task.request.ticker)

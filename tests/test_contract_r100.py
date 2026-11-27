@@ -1,5 +1,6 @@
 """R100a/R102a 回归：代码前后边界为 Unicode 数字；敏感问题被空白/零宽/连字符拆开的代码
 用「相邻数字对桥接」兜底找回，且兜底不把金额/日期拼成代码、不参与模型/名称的优先级。"""
+import json
 import threading
 import time
 
@@ -195,7 +196,8 @@ def test_ambiguous_loose_candidates_listed_in_event(repo, policy):
     task = repo.get_task(tid)
     assert task["status"] == "failed"
     notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
-    assert any("多个候选" in m and "300750" in m and "600519" in m for m in notes)
+    assert any("多个候选" in m and "[已脱敏]" in m for m in notes)   # 敏感问题：候选数字不落盘
+    assert "600519" not in " ".join(notes) and "300750" not in " ".join(notes)
 
 
 def test_explicit_ticker_conflict_with_code_is_visible(repo, policy):
@@ -277,13 +279,14 @@ def test_explicit_conflicts_with_code_and_name_both_logged(repo, policy):
 class _EchoTickerLLM(FakeLLM):
     """intake 返回固定 ticker 的模型桩（其余角色沿用 FakeLLM）。"""
 
-    def __init__(self, ticker: str):
+    def __init__(self, ticker: str, company: str = ""):
         super().__init__()
         self._ticker = ticker
+        self._company = company
 
     def json(self, role, system, user, schema, max_tokens=None):
         if schema is IntakeOut:
-            return IntakeOut(company_name="", ticker=self._ticker, intent="research", focus=""), 50
+            return IntakeOut(company_name=self._company, ticker=self._ticker, intent="research", focus=""), 50
         return super().json(role, system, user, schema, max_tokens)
 
 
@@ -337,8 +340,8 @@ def test_visible_code_source_is_code_not_model(repo, policy):
     """模型回显问题中可见的代码：来源应为 code，而不是 model（否则前端误标推断）。"""
     task = _run_llm(repo, policy, _EchoTickerLLM("600519"), "复核 600519 半年报业绩")
     assert task["request"]["ticker_source"] == "code"
-    # 模型给出原文没有的标的才算推断
-    task2 = _run_llm(repo, policy, _EchoTickerLLM("600519"), "帮我看看这家公司的近况")
+    # 模型给出原文没有的标的（有公司名支撑）才算推断
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("600519", company="贵州茅台"), "帮我看看贵州茅台这家公司的近况")
     assert task2["request"]["ticker_source"] == "model"
 
 
@@ -380,7 +383,7 @@ def test_digit_context_starter_precision():
 
 def test_model_infers_name_when_only_amount_present(repo, policy):
     """问题里只有六位数金额时，模型按公司名推断出的代码仍要被接受（not codes 语义）。"""
-    task = _run_llm(repo, policy, _EchoTickerLLM("300750"), "我在看宁德时代，去年营收600519万元")
+    task = _run_llm(repo, policy, _EchoTickerLLM("300750", company="宁德时代"), "我在看宁德时代，去年营收600519万元")
     assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
     assert task["request"]["ticker"] == "300750"
     assert task["request"]["ticker_source"] == "model"
@@ -422,3 +425,35 @@ def test_dropped_event_wording_without_code(repo, policy):
     assert task["status"] == "failed"
     notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
     assert any("出现疑似金额" in m for m in notes)
+
+def test_model_ticker_without_company_evidence_rejected(repo, policy):
+    """没有任何公司名/代码依据时，模型给出的代码不得直接开跑（防幻觉标的）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001"), "去年营收600000万元，这只股票怎么样")
+    assert task["status"] == "failed"
+    assert task["request"].get("ticker") is None
+
+def test_sensitive_whole_document_masked(repo, policy):
+    """R112a important：敏感任务的整个任务文档（request/error/events/interrupt）不得复现被脱敏数字。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001"),
+                    "我持仓600" + NBSP + "519股和000001都有，怎么办？")
+    doc = json.dumps(task, ensure_ascii=False, default=str)
+    assert "600519" not in doc                       # 拆码候选在事件里也被遮蔽
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("拆码候选" in m and "[已脱敏]" in m for m in notes)
+
+
+def test_sensitive_multi_code_error_masked(repo, policy):
+    """敏感多代码失败：error 里的代码列表也要遮蔽。"""
+    task = _run(repo, policy, "我持有600519和000001各1000股，该怎么办？")
+    doc = json.dumps(task, ensure_ascii=False, default=str)
+    assert "600519" not in doc and "000001" not in doc
+    assert task["status"] == "failed" and "[已脱敏]" in (task.get("error") or "")
+
+
+def test_decimal_unit_table_complete():
+    """小数/逗号长数字紧跟完整单位表（万股/份/千万元/万元）都算金额；百姓 不是金额词首。"""
+    assert _codes_of("600519.123万股") == set()
+    assert _codes_of("600519.123" + ZWSP + "元") == set()
+    assert _codes_of("600519,123元") == set()
+    assert _codes_of("600519,23百姓生活") == {"600519"}
+    assert _codes_of("600519.12百万元") == set()
