@@ -82,6 +82,7 @@ export function zh(text: string | null | undefined): string {
 
 // A 股代码形态（与后端 nodes._CODE_SPACED 同口径）：数字主体只认 ASCII [0-9]，前后边界是
 // Unicode 数字（\p{Nd}，非 ASCII 数字紧邻时不算代码），代码内允许一个半角/全角空格。
+// 注：\p{Nd} 的具体码位随 JS 引擎的 Unicode 数据版本演进，与 Python \d 理论上可能有差异。
 const A_SHARE_CODE = /(?<![\p{Nd}])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![\p{Nd}])/u;
 export function normDigits(q: string): string {
   return q.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
