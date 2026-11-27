@@ -111,8 +111,10 @@ class ResearchService:
                 # 排队中被取消、intake 未执行的任务也能凭 request.ticker 重试。
                 # 只回填唯一且形态合法的代码；名称解析留给 intake（回填成显式 ticker 会越过模型
                 # 解析，问题提到多家公司时重试会研究错标的）。R98a 审计：不要把名称启发式写成权威值。
-                from advisor.graph.nodes import _CODE, _codes_of, _norm_digits
+                from advisor.graph.nodes import _CODE, _codes_of, _codes_of_loose, _norm_digits
                 codes = _codes_of(_norm_digits(req.question))
+                if not codes and self.guard.find_sensitive(req.question):
+                    codes = _codes_of_loose(req.question)   # 敏感问题的数字会被遮蔽：宽松合并兜底
                 if len(codes) == 1:
                     code = next(iter(codes))
                     if _CODE.fullmatch(code):          # 持久化产物必须能通过 request.ticker 的 ^[0-9]{6}$

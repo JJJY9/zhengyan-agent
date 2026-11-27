@@ -80,27 +80,23 @@ export function zh(text: string | null | undefined): string {
     .replace(/门禁/g, "门控").replace(/(质量|噪声|成本|回归|审批)门(?!控)/g, "$1门控");
 }
 
-// A 股代码形态（与后端 nodes._CODE_SPACED 同口径）：只认 ASCII 数字，代码内允许一个半角/全角
-// 空格；制表符/换行等空白不是分隔符（粘贴表格、折行会把无关数字拼成"代码"）。全角数字先归一。
-const A_SHARE_CODE = /(?<![0-9])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])/;
+// A 股代码形态（与后端 nodes._CODE_SPACED 同口径）：数字主体只认 ASCII [0-9]，前后边界是
+// Unicode 数字（\p{Nd}，非 ASCII 数字紧邻时不算代码），代码内允许一个半角/全角空格。
+const A_SHARE_CODE = /(?<![\p{Nd}])(?:[036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![\p{Nd}])/u;
 export function normDigits(q: string): string {
   return q.replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 }
 export function ashareCodes(q: string): string[] {
-  const re = new RegExp(A_SHARE_CODE.source, "g");
+  const re = new RegExp(A_SHARE_CODE.source, "gu");
   return (normDigits(q).match(re) ?? []).map((c) => c.replace(/\s+/g, ""));
 }
 export function hasAshareCode(q: string): boolean {
   return A_SHARE_CODE.test(normDigits(q));
 }
-/** 页面附带的 ticker 只在问题没有点名其它标的时使用：问题里出现其它 A 股代码，
- *  或出现其它已跟踪档案的公司名（且未点名页面这只），都视为用户改问了别的股票。 */
-export function resolveSubmitTicker(question: string, pageTicker: string | undefined,
-                                    rows: Array<{ ticker: string; name?: string | null }> | null): string | undefined {
+/** 页面附带的 ticker 只在问题没有点名其它 A 股代码时使用（财务数字 208448 万元不是代码）。
+ *  公司名维度不在这里判定：R100a 审计的两条 important 证明前端按档案全名做仲裁会因简称/
+ *  网站名偏差把研究翻转到别的股票，名称与页面标的的冲突留给 intake 的事件/boundary_note 呈现。 */
+export function resolveSubmitTicker(question: string, pageTicker: string | undefined): string | undefined {
   if (!pageTicker) return undefined;
-  if (ashareCodes(question).some((c) => c !== pageTicker)) return undefined;
-  const ownName = (rows ?? []).find((r) => r.ticker === pageTicker)?.name;
-  if (ownName && question.includes(ownName)) return pageTicker;
-  const otherName = (rows ?? []).some((r) => r.ticker !== pageTicker && r.name && question.includes(r.name));
-  return otherName ? undefined : pageTicker;
+  return ashareCodes(question).some((c) => c !== pageTicker) ? undefined : pageTicker;
 }

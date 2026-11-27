@@ -161,7 +161,9 @@ export default function TaskDetail() {
           <span className="muted small">
             {task.request.ticker || hasAshareCode(task.request.question)
               ? "用已保存的请求（问题为脱敏后的文本）发起一个新任务"
-              : <>问题已被脱敏且未识别到股票代码，重试可能仍提示未能识别标的；也可<Link to="/new">去新研究</Link>写明 6 位代码</>}
+              : /未能识别|多个股票代码/.test(task.error ?? "")
+                ? <>上次未识别到股票代码；重试将重新识别标的，若仍失败可<Link to="/new">去新研究</Link>写明 6 位代码</>
+                : "用已保存的请求发起新任务，将重新识别标的（问题里的公司名可识别即可）"}
           </span>
         </div>
       )}

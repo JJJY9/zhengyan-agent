@@ -21,11 +21,14 @@ from advisor.skills.research.earnings_review import (
     draft_user_prompt,
 )
 
-_CODE = re.compile(r"(?<![0-9])([036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])")
+_CODE = re.compile(r"(?<!\d)([036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?!\d)")
 # 代码内只允许一个半角/全角空格：\s 还会匹配制表符/换行/NBSP，会把粘贴表格、折行里的
 # 两个无关数字拼成一个"合法"代码，失败路径因此变成静默研究错误公司。
-_CODE_SPACED = re.compile(r"(?<![0-9])([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?![0-9])")
+# 数字主体用 ASCII [0-9]（Unicode \d 会放行阿拉伯-印度等数字），前后边界仍用 \d：
+# 非 ASCII 数字紧邻时不算代码（'٥600519' 不能被截成 600519）。
+_CODE_SPACED = re.compile(r"(?<!\d)([036][0-9]{2}[ 　]?[0-9]{3}|[036][0-9]{5}|[48][0-9]{5}|92[0-9]{4})(?!\d)")
 _FW_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+_LOOSE_DIGIT_GAP = re.compile(r"(?<=[0-9０-９])\s+(?=[0-9０-９])")
 
 
 def _norm_digits(text: str) -> str:
@@ -41,6 +44,12 @@ def _norm_code(text: str) -> str:
 def _codes_of(text: str) -> set[str]:
     """问题中出现的股票代码：允许代码内部一个空格（'600 519'），不把相邻数字误并。"""
     return {_norm_code(m.group(1)) for m in _CODE_SPACED.finditer(text or "")}
+
+
+def _codes_of_loose(text: str) -> set[str]:
+    """敏感问题的兜底解析：数字间的任意空白先合并（与 egress 的整段归一一致）再找代码。
+    只在严格解析为空且问题含敏感信息时使用——此时数字已被整段遮蔽，宽松合并是找回标的的唯一途径。"""
+    return _codes_of(_LOOSE_DIGIT_GAP.sub("", _norm_digits(text)))
 _RISK = re.compile(r"风险|负面|下滑|质疑|问题|处罚|诉讼|减持|下调|反方")
 MIN_VERIFIED_FACTS = 3
 
@@ -123,6 +132,11 @@ class Nodes:
         h, budget = self._h(state, "intake")
         explicit = state.get("ticker")
         codes = _codes_of(qn)
+        sensitive_hit = bool(self.guard.find_sensitive(q))
+        if not codes and sensitive_hit:
+            # 敏感问题的数字会被 redact_question 整段遮蔽：NBSP/换行/制表符拆开的代码
+            # 严格正则认不出，模型也看不到原文——用 egress 同口径的宽松合并兜底找回标的。
+            codes = _codes_of_loose(q)
         code = explicit or (next(iter(codes)) if len(codes) == 1 else None)   # 多个代码不硬猜，交给模型/澄清
         known = {d["ticker"]: d.get("name") or "" for d in self.d.repo.list_dossiers() if d.get("ticker")}
         name_code = next((t for t, n in known.items() if n and n in qn), None)   # 名字先本地解析，脱敏后模型看不到也能识别
@@ -154,7 +168,7 @@ class Nodes:
             elif name_code:
                 code = name_code
         intent = "trade_execution" if self.guard.has_trade_intent(q) else out.intent
-        sensitive = bool(self.guard.find_sensitive(q))
+        sensitive = sensitive_hit
         upd = {
             "ticker": code, "company_name": out.company_name or "", "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",
