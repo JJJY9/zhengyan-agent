@@ -113,7 +113,7 @@ export interface TaskEvent { ts: string; node: string; message: string }
 export interface Task {
   task_id: string; status: "queued" | "running" | "waiting_approval" | "done" | "failed" | "cancelled";
   request: { question: string; ticker: string | null; as_of: string | null; route: string; redacted?: boolean;
-             ticker_source?: "explicit" | "code" | "name" | "model" | "loose" };
+             ticker_source?: "explicit" | "code" | "name" | "model" | "loose" | null };
   events?: TaskEvent[]; interrupt: { type: string; message: string; items?: string[]; skill?: string; version?: string; ttl_s?: number; issued_at?: number } | null;
   result: { dossier_key: string; version: number; route?: string; routing?: RouteDecision;
     budget?: { limits: Record<string, number>; used: Record<string, number> } } | null;

@@ -355,3 +355,70 @@ def test_retry_preserves_inferred_source(repo, policy):
     task = _run_llm(repo, policy, FakeLLM(), "复核 600519 半年报业绩",
                     ticker="600519", ticker_source="loose")
     assert task["request"]["ticker_source"] == "loose"
+
+def test_wanyi_and_qianwanyuan_are_money():
+    """复合单位先于裸乘数：万亿/千万元 仍是金额（修复前被裸万分支短路成代码）。"""
+    assert _codes_of("营收600519万亿") == set()
+    assert _codes_of("600519千万元营收") == set()
+    assert _codes_of("600519万亿市值") == set()          # 与 base 一致：该形态按金额处理
+    assert _codes_of("600519千亿市值怎么看") == {"600519"}   # 千亿 仍是描述，保留代码
+
+
+def test_decimal_with_space_before_unit():
+    """≥3 位小数：单位前有空白/零宽也要跳过再判断。"""
+    assert _codes_of("600519.123 元") == set()
+    assert _codes_of("600519.12百万元") == set()
+
+
+def test_digit_context_starter_precision():
+    """'人/美/港' 单字不再当金额词首；'百' 补齐。"""
+    assert _codes_of("600519,23人生感悟") == {"600519"}
+    assert _codes_of("约合人民币600519") == set()
+    assert _codes_of("折合人民币600519") == set()
+    assert _codes_of("数字人民币600519") == {"600519"}
+
+
+def test_model_infers_name_when_only_amount_present(repo, policy):
+    """问题里只有六位数金额时，模型按公司名推断出的代码仍要被接受（not codes 语义）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("300750"), "我在看宁德时代，去年营收600519万元")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "300750"
+    assert task["request"]["ticker_source"] == "model"
+
+
+def test_model_choice_of_dropped_is_visible(repo, policy):
+    """模型选中疑似金额候选时要写事件（可见但允许模型裁决）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("300750"), "600519去年营收300750万元")
+    assert task["request"]["ticker"] == "300750"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("疑似金额" in m and "300750" in m for m in notes)
+
+
+def test_small_classifier_defers_to_llm_when_dropped(repo, policy):
+    """有疑似金额候选时 small 路径让位给大模型：被守卫误伤的代码可被模型补救。"""
+    deps = build_deps(repo, _EchoTickerLLM("002475"), policy, source=FakeSource(), web_tools=FakeWebTools(),
+                      decision=FakeDecision())
+    svc = ResearchService(deps, InMemorySaver())
+    tid = svc.start(ResearchRequest(question="002475元件业务和600519比怎么样", as_of=as_of(), route="quick"),
+                    background=False)
+    task = repo.get_task(tid)
+    assert task["request"]["ticker"] == "002475"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("疑似金额" in m for m in notes)
+
+
+def test_sensitive_dropped_event_masks_digits(repo, policy):
+    """R110a important：敏感问题的『疑似金额』事件不得把已脱敏的数字写回任务事件。"""
+    task = _run(repo, policy, "我的房贷600519元怎么办")
+    assert task["status"] == "failed"
+    texts = " ".join(e["message"] for e in task["events"])
+    assert "600519" not in texts
+    assert "疑似金额" in texts and "已脱敏" in texts
+
+
+def test_dropped_event_wording_without_code(repo, policy):
+    """没有采用任何代码时文案用『出现』而不是『另有』。"""
+    task = _run(repo, policy, "营收600519万元级公司怎么样")
+    assert task["status"] == "failed"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert any("出现疑似金额" in m for m in notes)
