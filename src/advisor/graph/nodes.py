@@ -262,7 +262,9 @@ def _mask_six(text: str) -> str:
 _NAME_STOP_TAILS = ("银行", "科技", "证券", "股份", "集团", "控股", "国际", "中国", "能源",
                     "电力", "医药", "实业", "投资", "发展", "产业", "板块", "汽车", "保险",
                     "航空", "传媒", "钢铁", "石油", "石化", "电器", "时代", "地产", "建筑",
-                    "机械", "家电", "食品", "饮料", "酒业", "港口", "航运", "船舶", "军工")
+                    "机械", "家电", "食品", "饮料", "酒业", "港口", "航运", "船舶", "军工",
+                    "啤酒", "水泥", "医疗", "矿业", "重工", "高速", "铁路", "机场", "黄金",
+                    "稀土", "电子", "通信", "物流", "旅游", "化工", "煤炭", "有色", "半导体")
 
 
 def _name_evidence(name: str, qn: str) -> bool:
@@ -274,7 +276,12 @@ def _name_evidence(name: str, qn: str) -> bool:
     if not name:
         return False
     if name.isdigit():
-        return len(name) != 6 and name in qn
+        if len(name) == 6:
+            return False
+        m = re.search(rf"(?<![0-9]){re.escape(name)}(?![0-9])", qn)
+        if not m:
+            return False
+        return not (_money_tail(qn, m.end()) or _money_head(qn, m.start()))   # '360万元' 不是名称
     if len(name) < 2 or name in _NAME_STOP_TAILS:
         return False
     if name in qn:
@@ -282,8 +289,13 @@ def _name_evidence(name: str, qn: str) -> bool:
     grams = [name[i:i + 3] for i in range(len(name) - 2)]
     if any(g in qn and not any(sw in g for sw in _NAME_STOP_TAILS) for g in grams):
         return True
-    for short in (name[:2], name[-2:]):
-        if short not in _NAME_STOP_TAILS and short in qn:
+    tail = name[-2:]
+    if tail not in _NAME_STOP_TAILS and tail in qn:
+        return True
+    # '中国石油' → '中石油'、'中国石化' → '中石化' 这类 A 股惯用简称
+    if name.startswith("中国") and len(name) >= 4:
+        alias = "中" + name[-2:]
+        if alias not in _NAME_STOP_TAILS and alias in qn:
             return True
     return False
 
@@ -392,8 +404,10 @@ class Nodes:
             elif not codes and _CODE.fullmatch(model_ticker):
                 # 无可见代码：本地档案名优先；其余模型码必须有本地依据（疑似金额/拆码/弱名称）
                 if name_hits and model_ticker not in name_hits:
-                    names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
-                    say(f"注意：问题点名的是 {names}，模型给出 {model_ticker}；将以本地档案名继续")
+                    if len(name_hits) == 1:
+                        names = "、".join(f"{known.get(t) or ''}（{t}）" for t in sorted(name_hits))
+                        say(f"注意：问题点名的是 {names}，模型给出 {model_ticker}；将以本地档案名继续")
+                    # 多名称时交由失败分支统一提示『多家已跟踪公司』，避免自相矛盾
                 elif model_ticker in name_hits:
                     code, code_src = model_ticker, "name"
                     say(f"注意：按档案名推断标的 {model_ticker}，请核对")
@@ -439,8 +453,9 @@ class Nodes:
         company = out.company_name or ""
         if code and known.get(code):
             company = known[code]   # 已知档案名权威：与最终标的对齐
-        elif not (_CODE.fullmatch(model_ticker) and model_ticker == code):
-            company = ""            # 模型代码与最终标的不一致：不沿用其公司名（避免 600999 配『平安银行』）
+        elif code in codes or not (_CODE.fullmatch(model_ticker) and model_ticker == code):
+            # 标的是问题里明写的代码、或模型代码未被采用：不沿用模型自报的公司名
+            company = ""
         upd = {
             "ticker": code, "company_name": company, "intent": intent, "focus": out.focus,
             "sensitive": sensitive, "budget": budget.to_dict(), "iteration": 0, "status": "running",

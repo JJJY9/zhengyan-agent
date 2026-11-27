@@ -180,15 +180,17 @@ export default function TaskDetail() {
             {retrying ? "正在发起…" : "按原参数重新发起"}
           </button>
           <span className="muted small">
-            {multiIssue
-              ? <>问题里点名了多个股票代码：重试不会自行变好，请<Link to="/new">去新研究</Link>里只写一个 6 位代码</>
-              : task.request.ticker || hasAshareCode(task.request.question)
-                ? "用已保存的请求（问题为脱敏后的文本）发起一个新任务"
-                : redacted
-                  ? <>问题中的数字已被脱敏；若问题里没有公司名，重试将无法识别标的——请<Link to="/new">去新研究</Link>写明 6 位代码</>
-                  : /未能识别/.test(task.error ?? "")
-                    ? <>上次未识别到股票代码；重试将重新识别标的（问题里的公司名可识别即可），若仍失败可<Link to="/new">去新研究</Link>写明 6 位代码</>
-                    : "用已保存的请求发起新任务，将重新识别标的（问题里的公司名可识别即可）"}
+            {(task.error ?? "").includes("多家已跟踪公司")
+              ? <>问题点名了多家已跟踪公司：请<Link to="/new">去新研究</Link>写明要研究哪一家或 6 位代码</>
+              : multiIssue
+                ? <>问题里点名了多个股票代码：重试不会自行变好，请<Link to="/new">去新研究</Link>里只写一个 6 位代码</>
+                : task.request.ticker || hasAshareCode(task.request.question)
+                  ? "用已保存的请求（问题为脱敏后的文本）发起一个新任务"
+                  : redacted
+                    ? <>问题中的数字已被脱敏；若问题里没有公司名，重试将无法识别标的——请<Link to="/new">去新研究</Link>写明 6 位代码</>
+                    : /未能识别/.test(task.error ?? "")
+                      ? <>上次未识别到股票代码；重试将重新识别标的（问题里的公司名可识别即可），若仍失败可<Link to="/new">去新研究</Link>写明 6 位代码</>
+                      : "用已保存的请求发起新任务，将重新识别标的（问题里的公司名可识别即可）"}
           </span>
         </div>
       )}

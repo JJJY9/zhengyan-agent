@@ -603,8 +603,11 @@ def test_industry_words_not_evidence_anywhere():
     assert not _name_evidence("新华保险", "保险板块最近怎么样")
     assert not _name_evidence("中国石化", "中国石油最近怎么样")      # 3 字片段『中国石』被停用词过滤
     assert not _name_evidence("中国中免", "中国中车最近怎么样")
-    assert _name_evidence("宁德时代", "宁德最近怎么样")               # 2 字前缀简称仍可召回
+    assert not _name_evidence("宁德时代", "宁德最近怎么样")           # 2 字前缀不再作证据（安全失败）
+    assert _name_evidence("中国石油", "中石油最近怎么样")             # 『中国X→中X』惯用简称
     assert _name_evidence("360", "360这家公司怎么样")                 # 非 6 位纯数字名可用
+    assert not _name_evidence("360", "有360万元闲钱怎么配置")          # 金额语境不是名称
+    assert not _name_evidence("360", "1360万")
 
 
 def test_industry_evidence_e2e_fails(repo, policy):
@@ -640,3 +643,45 @@ def test_decimal_and_dot_code_runs_kept():
     """句点后长数字不再因空字符串被当金额：'600519.123' 与 '600519.300750' 都保留代码。"""
     assert _codes_with_dropped("600519.123")[0] == {"600519"}
     assert _codes_with_dropped("600519.300750")[0] == {"600519", "300750"}
+
+
+def test_two_char_prefix_evidence_closed(repo, policy):
+    """2 字首证据已移除：地名/集团前缀（贵州/中信/华夏）不得为模型码背书。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600519", company="贵州茅台"), "贵州板块最近怎么走")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+    task2 = _run_llm(repo, policy, _EchoTickerLLM("600030", company="中信证券"), "中信银行最近怎么样")
+    assert task2["status"] == "failed" and task2["request"].get("ticker") is None
+
+
+def test_numeric_name_money_context_rejected(repo, policy):
+    """纯数字名只在非金额语境下算证据：『360万元闲钱』不被 360 背书。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("601360", company="360"), "有360万元闲钱，怎么配置比较好")
+    assert task["status"] == "failed" and task["request"].get("ticker") is None
+
+
+def test_zhongshi_alias_recall(repo, policy):
+    """『中国X→中X』惯用简称恢复召回：中石油+模型中国石油应被采纳。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("601857", company="中国石油"), "中石油最近怎么样")
+    assert task["status"] in ("waiting_approval", "done", "running"), task.get("error")
+    assert task["request"]["ticker"] == "601857"
+
+
+def test_multi_name_conflict_no_contradictory_event(repo, policy):
+    """多档案名 + 模型另一码：不得先写『将以本地档案名继续』再失败（文案自相矛盾）。"""
+    repo.db.dossiers.insert_one({"key": CODE, "ticker": CODE, "name": NAME, "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    repo.db.dossiers.insert_one({"key": "300750", "ticker": "300750", "name": "宁德时代", "version": 1,
+                                 "as_of": "2026-12-01", "status": "committed"})
+    task = _run_llm(repo, policy, _EchoTickerLLM("000001", company="平安银行"), f"{NAME}和宁德时代哪个好")
+    assert task["status"] == "failed"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert not any("将以本地档案名继续" in m for m in notes)
+    assert any("多家已跟踪公司" in (task.get("error") or "") for _ in [0])
+
+
+def test_visible_code_model_name_dropped(repo, policy):
+    """问题明写代码时模型自报的公司名不沿用（600519 不再配『五粮液』）。"""
+    task = _run_llm(repo, policy, _EchoTickerLLM("600519", company="五粮液"), "600519最近怎么样")
+    assert task["request"]["ticker"] == "600519"
+    notes = [e["message"] for e in task["events"] if e["node"] == "intake"]
+    assert not any("五粮液" in m for m in notes)
