@@ -3,13 +3,30 @@ from datetime import date
 
 from fastmcp import FastMCP
 
+from advisor.contracts.dossier import Dossier
 from advisor.evidence import sanitize
 from advisor.graph.deps import Deps, build_default_deps
 from advisor.harness import Budget
 
 
+def _dossier_snapshot(d: Dossier) -> dict:
+    """外部 Agent 需要的档案要点（不含报告全文与内部编排细节）。"""
+    return {
+        "key": d.key, "version": d.version, "ticker": d.ticker, "name": d.name,
+        "as_of": d.as_of.isoformat(), "status": d.status, "summary": d.summary,
+        "quality": d.quality.model_dump(mode="json"),
+        "claims": [{"kind": c.kind, "status": c.status, "text": c.text} for c in d.claims],
+        "unknowns": list(d.unknowns),
+        "dissents": [x.model_dump(mode="json") for x in d.dissents],
+        "review_triggers": [x.model_dump(mode="json") for x in d.review_triggers],
+        "prior_review": [x.model_dump(mode="json") for x in d.prior_review],
+        "boundary_notes": list(d.boundary_notes),
+        "evidence_ids": list(d.evidence_ids),
+    }
+
+
 def tool_functions(deps: Deps) -> dict:
-    """四个只读工具的实现，MCP 注册与单元测试共用。"""
+    """只读工具的实现（数据源技能 + 档案读取），MCP 注册与单元测试共用。"""
 
     def call(skill: str, **args):
         as_of = args.get("as_of") or date.today()
@@ -40,8 +57,32 @@ def tool_functions(deps: Deps) -> dict:
             hit["snippet"] = sanitize(hit.get("snippet") or "", max_chars=800)[0]
         return out
 
+    def dossier_current(ticker: str, as_of: date | None = None) -> dict:
+        """某标的「当前档案」快照（按研究时点取最新版本）：结论摘要、主张核验状态、
+        未决问题、复核触发条件与质量门控。只读，不含报告全文。"""
+        key = (ticker or "").strip()
+        if not key:
+            raise ValueError("ticker 不能为空")
+        if ":" in key:
+            raise ValueError("评测等命名空间档案不对 MCP 开放")
+        d = deps.repo.current_dossier(key, as_of or date.today())
+        if d is None:
+            return {"found": False, "ticker": key, "message": f"还没有 {key} 的档案"}
+        return {"found": True, **_dossier_snapshot(d)}
+
+    def dossier_list(limit: int = 20) -> dict:
+        """已跟踪标的的当前档案概要列表（每个标的取研究时点最新的版本）。"""
+        rows = deps.repo.list_dossiers()[: max(1, min(int(limit), 100))]
+        return {"count": len(rows), "dossiers": [
+            {"key": r["key"], "ticker": r.get("ticker", ""), "name": r.get("name", ""),
+             "version": r["version"], "as_of": str(r.get("as_of") or "")[:10],
+             "status": r.get("status", ""), "summary": r.get("summary", "")}
+            for r in rows
+        ]}
+
     return {"financial_statements": financial_statements, "market_daily": market_daily,
-            "announcements": announcements, "web_search": web_search}
+            "announcements": announcements, "web_search": web_search,
+            "dossier_current": dossier_current, "dossier_list": dossier_list}
 
 
 def build_server(deps: Deps | None = None) -> FastMCP:
