@@ -14,7 +14,7 @@ def _norm(q: str) -> str:
 def test_routing_golden_structure():
     doc = json.loads((ROOT / "evals" / "golden" / "routing_cases.json").read_text(encoding="utf-8"))
     cases = doc["cases"]
-    assert len(cases) >= 30                                    # 三档各 ≥10 才能做校准
+    assert len(cases) >= 42                                    # R128a 起 48 题；三档各 ≥14 才能做校准
     labels = [c["label"] for c in cases]
     assert set(labels) <= {"quick", "standard", "deep"}
     for c in cases:
@@ -23,5 +23,5 @@ def test_routing_golden_structure():
     normalized = [_norm(c["question"]) for c in cases]
     assert len(normalized) == len(set(normalized))             # 归一化后唯一：近似重复题会虚抬准确率
     for label in ("quick", "standard", "deep"):
-        assert labels.count(label) >= 10
+        assert labels.count(label) >= 14
         assert labels.count(label) >= len(cases) * 0.2          # 三档相对均衡，校准不被单档主导
