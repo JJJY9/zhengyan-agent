@@ -305,6 +305,19 @@ def watch_list(active_only: bool = typer.Option(True, "--active/--all", help="�
         typer.echo("未关闭的提醒：无")
 
 
+@watch_app.command("dismiss")
+def watch_dismiss(alert_id: str, note: str = typer.Option("", "--note", help="忽略原因（可选，记入提醒）")):
+    """忽略一条待处理提醒（不改动已有档案与研究）。"""
+    from advisor.watch import WatchError
+
+    try:
+        _services().watch.dismiss(alert_id, note)
+    except WatchError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1)
+    typer.echo(f"已忽略提醒 {alert_id}")
+
+
 @watch_app.command("scan")
 def watch_scan():
     """扫描全部订阅（可放进 cron 定时执行）。"""

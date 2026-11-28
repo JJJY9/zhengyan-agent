@@ -118,6 +118,10 @@ Windows 下虚拟环境的命令在 `.venv\Scripts\` 里（如 `.venv\Scripts\ad
 .venv/bin/advisor watch list              # 订阅与未关闭提醒（--all 含停用订阅）
 ```
 
+```bash
+.venv/bin/advisor watch dismiss <alert_id>  # 忽略一条待处理提醒（--note 记原因）
+```
+
 底稿写入 `reports/`。测试：
 
 ```bash
