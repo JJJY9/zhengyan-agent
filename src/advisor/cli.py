@@ -348,6 +348,29 @@ def strategy_rollback(card_id: str, reason: str = typer.Option(...), actor: str 
 
 
 @app.command()
+def health():
+    """环境自检：Mongo 连接、技能注册、模型配置、RSI 在用版本与数据量（只读）。"""
+    deps = _services().deps
+    db = deps.repo.db
+    try:
+        db.command("ping")
+    except Exception as e:                       # 连接失败是自检的一类结果，不用堆栈打扰用户
+        typer.echo(f"MongoDB：连接失败（{type(e).__name__}: {e}）")
+        raise typer.Exit(code=1)
+    typer.echo("MongoDB：连接正常")
+    skills = deps.registry.catalog()
+    typer.echo(f"技能：{len(skills)} 个（{'、'.join(s['name'] for s in skills)}）")
+    llm_ok = getattr(deps.llm, "configured", True) is not False
+    typer.echo(f"大模型：{'已配置' if llm_ok else '未配置（只能浏览已有档案）'}")
+    typer.echo(f"决策小模型：{'已配置' if deps.decision is not None else '未配置（路由只用大模型）'}")
+    if deps.rsi is not None:
+        vers = deps.rsi.versions()
+        typer.echo("RSI 在用版本：" + "、".join(f"{k} v{v}" if v else f"{k} 基线" for k, v in vers.items()))
+    counts = "，".join(f"{name} {db[name].count_documents({})}" for name in ("tasks", "dossiers", "evidence", "cache"))
+    typer.echo(f"数据量：{counts}")
+
+
+@app.command()
 def serve(host: str = "127.0.0.1", port: int = 8000):
     """启动 API（若已构建前端，同时提供 Web 界面）。"""
     import uvicorn

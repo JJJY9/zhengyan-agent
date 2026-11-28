@@ -110,6 +110,10 @@ Windows 下虚拟环境的命令在 `.venv\Scripts\` 里（如 `.venv\Scripts\ad
 .venv/bin/advisor task show <task_id>     # 查看任务状态/结局/待确认信息与最近事件
 ```
 
+```bash
+.venv/bin/advisor health                  # 环境自检：Mongo 连接、技能注册、模型配置、RSI 在用版本、数据量
+```
+
 底稿写入 `reports/`。测试：
 
 ```bash
