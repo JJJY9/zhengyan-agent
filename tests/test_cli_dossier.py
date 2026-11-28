@@ -36,7 +36,7 @@ def test_dossier_show_current_and_history(repo, policy, monkeypatch):
     monkeypatch.setattr(cli_mod, "_services", lambda: services)
     res = _run(["dossier", "show", CODE])
     assert res.exit_code == 0
-    assert "质量门控" in res.output and "问题：" in res.output and f"v1" in res.output
+    assert "质量门控" in res.output and "问题：" in res.output and "v1" in res.output
     res_v1 = _run(["dossier", "show", CODE, "--version", "1"])
     assert res_v1.exit_code == 0 and "v1" in res_v1.output
 
