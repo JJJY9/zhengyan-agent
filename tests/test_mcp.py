@@ -25,7 +25,10 @@ def test_web_search_blocks_sensitive_query(service):
     assert "hits" in out
 
 
-def test_build_server_registers_four_tools(service):
+def test_build_server_registers_tools(service):
     mcp = build_server(service.deps)
     tools = asyncio.run(mcp.list_tools())
-    assert {t.name for t in tools} == {"financial_statements", "market_daily", "announcements", "web_search"}
+    assert {t.name for t in tools} == {
+        "financial_statements", "market_daily", "announcements", "web_search",
+        "dossier_current", "dossier_list",
+    }

@@ -122,6 +122,16 @@ Windows 下虚拟环境的命令在 `.venv\Scripts\` 里（如 `.venv\Scripts\ad
 .venv/bin/advisor watch dismiss <alert_id>  # 忽略一条待处理提醒（--note 记原因）
 ```
 
+```bash
+.venv/bin/advisor mcp                     # 以 MCP 服务（stdio）暴露只读工具
+```
+
+MCP 工具均为只读：`financial_statements` / `market_daily` / `announcements` / `web_search`
+（经 Harness 的 mcp 流程白名单与预算，网页结果按出域规则消毒），以及档案读取
+`dossier_current`（某标的当前档案快照：摘要、主张核验状态、未决问题、复核条件、质量门控）
+与 `dossier_list`（已跟踪标的的当前档案概要）。外部 Agent 可直接复用已验证的档案结论，
+评测等命名空间档案不对 MCP 开放。
+
 底稿写入 `reports/`。测试：
 
 ```bash
