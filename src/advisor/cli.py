@@ -282,6 +282,29 @@ def watch_add(ticker: str, price_move_pct: float = 10):
     typer.echo(f"已订阅 {d.name}（{ticker}），价格提醒阈值 ±{price_move_pct:g}%")
 
 
+@watch_app.command("list")
+def watch_list(active_only: bool = typer.Option(True, "--active/--all", help="只看启用中的订阅")):
+    """列出订阅与未关闭的提醒（open/reviewing）——只读。"""
+    store = _services().watch.store
+    subs = store.list_subs(active_only=active_only)
+    if subs:
+        typer.echo("订阅：")
+        for s in subs:
+            last = f"上次扫描 {s.last_scan_at:%Y-%m-%d %H:%M}" if s.last_scan_at else "尚未扫描"
+            suffix = "" if s.active else "（已停用）"
+            typer.echo(f"  {s.ticker} {s.name}  阈值 ±{s.price_move_pct:g}%  {last}{suffix}")
+    else:
+        typer.echo("订阅：还没有（advisor watch add <代码>）")
+    alerts = [a for a in store.list_alerts(limit=200) if a.status in ("open", "reviewing")]
+    if alerts:
+        typer.echo("未关闭的提醒：")
+        for a in alerts:
+            typer.echo(f"  {a.id}  {a.ticker} {a.name}  {a.status}  档案 v{a.dossier_version}"
+                       f"  变化 {len(a.events)} 条")
+    else:
+        typer.echo("未关闭的提醒：无")
+
+
 @watch_app.command("scan")
 def watch_scan():
     """扫描全部订阅（可放进 cron 定时执行）。"""
