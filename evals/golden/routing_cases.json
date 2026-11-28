@@ -1,41 +1,204 @@
 {
-  "_说明": "路由判别器金标：标签由人工按'赌注与不确定性'标注，用于准确率与温度校准。",
+  "_说明": "路由判别器金标：标签由人工按'赌注与不确定性'标注，用于准确率与温度校准。2026-11（R48a/R128a）扩充至 48 题，三档各 16。",
   "cases": [
-    {"question": "什么是市盈率TTM？", "label": "quick", "intent": "explain"},
-    {"question": "扣非净利润和归母净利润有什么区别", "label": "quick", "intent": "explain"},
-    {"question": "合同负债是什么意思", "label": "quick", "intent": "explain"},
-    {"question": "600519 最新收盘价是多少", "label": "quick"},
-    {"question": "宁德时代 300750 最近一次公告是什么", "label": "quick"},
-    {"question": "贵州茅台 600519 上半年营收是多少", "label": "quick"},
-    {"question": "比亚迪 002594 的总股本是多少", "label": "quick"},
-    {"question": "招商银行 600036 最新的市净率大概多少", "label": "quick"},
-    {"question": "复核贵州茅台 600519 最新一期半年报业绩", "label": "standard"},
-    {"question": "分析宁德时代 300750 最新一期利润质量", "label": "standard"},
-    {"question": "美的集团 000333 半年报的收入和利润同口径变化", "label": "standard"},
-    {"question": "比亚迪 002594 二季度单季业绩怎么样", "label": "standard"},
-    {"question": "五粮液 000858 经营现金流和净利润匹配吗", "label": "standard"},
-    {"question": "恒瑞医药 600276 最近一期研发投入和利润变化", "label": "standard"},
-    {"question": "海天味业 603288 最新业绩复盘", "label": "standard"},
-    {"question": "隆基绿能 601012 最新季度亏损收窄了吗", "label": "standard"},
-    {"question": "贵州茅台 600519 当前估值是否已经反映了业绩下滑风险？多空分歧在哪里", "label": "deep"},
-    {"question": "宁德时代 300750 在价格战下利润率能否守住，看多和看空的理由分别是什么", "label": "deep"},
-    {"question": "某公司被做空机构发布报告质疑财务造假，影响有多大，该怎么看 600519", "label": "deep"},
-    {"question": "比亚迪 002594 估值是否合理，持有逻辑是否还成立", "label": "deep"},
-    {"question": "隆基绿能 601012 行业产能过剩下是否已经见底，有哪些反证", "label": "deep"},
-    {"question": "招商银行 600036 地产风险敞口会不会显著侵蚀利润，悲观情景下怎样", "label": "deep"},
-    {"question": "恒瑞医药 600276 集采和创新药出海哪个影响更大，结论分歧在哪", "label": "deep"},
-    {"question": "五粮液 000858 渠道库存高企与业绩增长并存，可信度如何", "label": "deep"},
-    {"question": "分众传媒 002027 现在股价多少", "label": "quick"},
-    {"question": "PE和PB分别怎么算", "label": "quick", "intent": "explain"},
-    {"question": "中国平安 601318 股息率是多少", "label": "quick"},
-    {"question": "经营活动现金流净额是什么指标", "label": "quick", "intent": "explain"},
-    {"question": "京东方A 000725 最新一期单季毛利率变化", "label": "standard"},
-    {"question": "海康威视 002415 半年报应收和现金流是否匹配", "label": "standard"},
-    {"question": "万华化学 600309 最新季报业绩与去年同期同口径对比", "label": "standard"},
-    {"question": "伊利股份 600887 半年报利润质量怎么样", "label": "standard"},
-    {"question": "京东方A 000725 面板周期见底了吗，多空双方的核心论据分别是什么", "label": "deep"},
-    {"question": "海康威视 002415 海外制裁风险对长期价值影响多大，有哪些反证", "label": "deep"},
-    {"question": "万华化学 600309 行业扩产周期与公司盈利能力的矛盾怎么看，分歧在哪", "label": "deep"},
-    {"question": "伊利股份 600887 人口结构变化下乳业增长逻辑是否失效，该信谁的观点", "label": "deep"}
+    {
+      "question": "什么是市盈率TTM？",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "扣非净利润和归母净利润有什么区别",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "合同负债是什么意思",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "600519 最新收盘价是多少",
+      "label": "quick"
+    },
+    {
+      "question": "宁德时代 300750 最近一次公告是什么",
+      "label": "quick"
+    },
+    {
+      "question": "贵州茅台 600519 上半年营收是多少",
+      "label": "quick"
+    },
+    {
+      "question": "比亚迪 002594 的总股本是多少",
+      "label": "quick"
+    },
+    {
+      "question": "招商银行 600036 最新的市净率大概多少",
+      "label": "quick"
+    },
+    {
+      "question": "复核贵州茅台 600519 最新一期半年报业绩",
+      "label": "standard"
+    },
+    {
+      "question": "分析宁德时代 300750 最新一期利润质量",
+      "label": "standard"
+    },
+    {
+      "question": "美的集团 000333 半年报的收入和利润同口径变化",
+      "label": "standard"
+    },
+    {
+      "question": "比亚迪 002594 二季度单季业绩怎么样",
+      "label": "standard"
+    },
+    {
+      "question": "五粮液 000858 经营现金流和净利润匹配吗",
+      "label": "standard"
+    },
+    {
+      "question": "恒瑞医药 600276 最近一期研发投入和利润变化",
+      "label": "standard"
+    },
+    {
+      "question": "海天味业 603288 最新业绩复盘",
+      "label": "standard"
+    },
+    {
+      "question": "隆基绿能 601012 最新季度亏损收窄了吗",
+      "label": "standard"
+    },
+    {
+      "question": "贵州茅台 600519 当前估值是否已经反映了业绩下滑风险？多空分歧在哪里",
+      "label": "deep"
+    },
+    {
+      "question": "宁德时代 300750 在价格战下利润率能否守住，看多和看空的理由分别是什么",
+      "label": "deep"
+    },
+    {
+      "question": "某公司被做空机构发布报告质疑财务造假，影响有多大，该怎么看 600519",
+      "label": "deep"
+    },
+    {
+      "question": "比亚迪 002594 估值是否合理，持有逻辑是否还成立",
+      "label": "deep"
+    },
+    {
+      "question": "隆基绿能 601012 行业产能过剩下是否已经见底，有哪些反证",
+      "label": "deep"
+    },
+    {
+      "question": "招商银行 600036 地产风险敞口会不会显著侵蚀利润，悲观情景下怎样",
+      "label": "deep"
+    },
+    {
+      "question": "恒瑞医药 600276 集采和创新药出海哪个影响更大，结论分歧在哪",
+      "label": "deep"
+    },
+    {
+      "question": "五粮液 000858 渠道库存高企与业绩增长并存，可信度如何",
+      "label": "deep"
+    },
+    {
+      "question": "分众传媒 002027 现在股价多少",
+      "label": "quick"
+    },
+    {
+      "question": "PE和PB分别怎么算",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "中国平安 601318 股息率是多少",
+      "label": "quick"
+    },
+    {
+      "question": "经营活动现金流净额是什么指标",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "京东方A 000725 最新一期单季毛利率变化",
+      "label": "standard"
+    },
+    {
+      "question": "海康威视 002415 半年报应收和现金流是否匹配",
+      "label": "standard"
+    },
+    {
+      "question": "万华化学 600309 最新季报业绩与去年同期同口径对比",
+      "label": "standard"
+    },
+    {
+      "question": "伊利股份 600887 半年报利润质量怎么样",
+      "label": "standard"
+    },
+    {
+      "question": "京东方A 000725 面板周期见底了吗，多空双方的核心论据分别是什么",
+      "label": "deep"
+    },
+    {
+      "question": "海康威视 002415 海外制裁风险对长期价值影响多大，有哪些反证",
+      "label": "deep"
+    },
+    {
+      "question": "万华化学 600309 行业扩产周期与公司盈利能力的矛盾怎么看，分歧在哪",
+      "label": "deep"
+    },
+    {
+      "question": "伊利股份 600887 人口结构变化下乳业增长逻辑是否失效，该信谁的观点",
+      "label": "deep"
+    },
+    {
+      "question": "毛利率和净利率的区别是什么",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "300750 最近一个交易日的成交额是多少",
+      "label": "quick"
+    },
+    {
+      "question": "归母净资产是什么概念",
+      "label": "quick",
+      "intent": "explain"
+    },
+    {
+      "question": "601012 现在的市盈率是多少",
+      "label": "quick"
+    },
+    {
+      "question": "泸州老窖 000568 最新一期营收和利润变化",
+      "label": "standard"
+    },
+    {
+      "question": "三一重工 600031 半年报收入质量点评",
+      "label": "standard"
+    },
+    {
+      "question": "紫金矿业 601899 最新单季毛利率同比变化",
+      "label": "standard"
+    },
+    {
+      "question": "兆易创新 603986 最新季报存货和收入变化是否匹配",
+      "label": "standard"
+    },
+    {
+      "question": "紫金矿业 601899 铜金价格波动下盈利弹性多大，多空分歧在哪",
+      "label": "deep"
+    },
+    {
+      "question": "三一重工 600031 工程机械周期下行是否已反映在股价，看多和看空的证据分别是什么",
+      "label": "deep"
+    },
+    {
+      "question": "泸州老窖 000568 渠道库存与报表增长是否背离，哪种解释更可信",
+      "label": "deep"
+    },
+    {
+      "question": "兆易创新 603986 存储芯片周期反转的可信度如何，有哪些反证",
+      "label": "deep"
+    }
   ]
 }
