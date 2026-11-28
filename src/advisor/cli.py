@@ -63,6 +63,47 @@ eval_app = typer.Typer(help="评测：路由校准、单 Agent 与多专家对�
 app.add_typer(eval_app, name="eval")
 
 
+dossier_app = typer.Typer(help="档案：列出与查看决策档案（只读，不触发研究）")
+app.add_typer(dossier_app, name="dossier")
+
+
+@dossier_app.command("list")
+def dossier_list(limit: int = typer.Option(20, "--limit", min=1, help="最多显示多少份")):
+    """按当前版本列出档案（新的在前）。"""
+    rows = _services().deps.repo.list_dossiers()[:limit]
+    if not rows:
+        typer.echo("还没有档案：先运行 advisor research")
+        return
+    for d in rows:
+        typer.echo(f"{d['key']} v{d['version']}  {d.get('name') or d['ticker']}（{d['ticker']}）"
+                   f"  {d.get('status')}  截至 {d.get('as_of')}")
+
+
+@dossier_app.command("show")
+def dossier_show(key: str, version: int = typer.Option(None, "--version", "-v",
+                                                       help="默认当前版本（as_of/版本号最大）")):
+    """查看一份档案的关键信息（摘要/主张状态/质量门控/未决/复核条件）。"""
+    repo = _services().deps.repo
+    d = repo.get_dossier(key, version) if version is not None else repo.current_dossier(key)
+    if d is None:
+        typer.echo(f"没有找到档案：{key}" + (f" v{version}" if version is not None else ""))
+        raise typer.Exit(code=1)
+    typer.echo(f"{d.key} v{d.version}  {d.name or d.ticker}（{d.ticker}）  {d.status}  截至 {d.as_of}")
+    typer.echo(f"问题：{d.question}")
+    if d.summary:
+        typer.echo(f"摘要：{d.summary}")
+    q = d.quality
+    typer.echo(f"质量门控：{q.decision}（核验 {q.verified} / 存疑 {q.disputed} / 驳回 {q.rejected}）")
+    for c in d.claims:
+        typer.echo(f"  [{c.status}] {c.text[:120]}")
+    if d.unknowns:
+        typer.echo("未决：" + "；".join(d.unknowns[:5]))
+    for t in d.review_triggers:
+        typer.echo(f"复核条件：{t.condition}（{t.reason}）")
+    if d.boundary_notes:
+        typer.echo("边界说明：" + "；".join(d.boundary_notes[:3]))
+
+
 def _service():
     return _services().research
 

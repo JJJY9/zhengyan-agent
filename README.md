@@ -100,6 +100,11 @@ Windows 下虚拟环境的命令在 `.venv\Scripts\` 里（如 `.venv\Scripts\ad
 .venv/bin/advisor eval update     # 持续更新：已重新研究的订阅提醒里，受影响结论是否被修正、没受影响的是否保留
 ```
 
+```bash
+.venv/bin/advisor dossier list            # 列出当前档案（标的名、版本、状态、截至时点）
+.venv/bin/advisor dossier show 600519     # 查看一份档案的摘要/主张状态/门控（--version N 指定历史版本）
+```
+
 底稿写入 `reports/`。测试：
 
 ```bash
