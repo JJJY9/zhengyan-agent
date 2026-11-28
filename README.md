@@ -105,6 +105,11 @@ Windows 下虚拟环境的命令在 `.venv\Scripts\` 里（如 `.venv\Scripts\ad
 .venv/bin/advisor dossier show 600519     # 查看一份档案的摘要/主张状态/门控（--version N 指定历史版本）
 ```
 
+```bash
+.venv/bin/advisor task list               # 研究任务列表（--status 过滤：queued/done/failed/…）
+.venv/bin/advisor task show <task_id>     # 查看任务状态/结局/待确认信息与最近事件
+```
+
 底稿写入 `reports/`。测试：
 
 ```bash

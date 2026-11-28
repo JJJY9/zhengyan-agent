@@ -104,6 +104,50 @@ def dossier_show(key: str, version: int = typer.Option(None, "--version", "-v",
         typer.echo("边界说明：" + "；".join(d.boundary_notes[:3]))
 
 
+task_app = typer.Typer(help="任务：列出与查看研究任务（只读，不触发研究）")
+app.add_typer(task_app, name="task")
+
+
+@task_app.command("list")
+def task_list(limit: int = typer.Option(20, "--limit", min=1, help="最多显示多少条"),
+              status: str = typer.Option(None, "--status",
+                                         help="按状态过滤：queued/running/waiting_approval/done/failed/cancelled")):
+    """列出研究任务（新的在前，可用 --status 过滤）。"""
+    rows = _services().deps.repo.list_tasks(limit=200)
+    if status:
+        rows = [t for t in rows if t.get("status") == status]
+    rows = rows[:limit]
+    if not rows:
+        typer.echo("没有匹配的任务：先运行 advisor research")
+        return
+    for t in rows:
+        q = (t.get("request") or {}).get("question", "")
+        typer.echo(f"{t['task_id']}  {t.get('status')}  {q[:60]}")
+
+
+@task_app.command("show")
+def task_show(task_id: str):
+    """查看一条任务的状态/请求参数/结局与最近事件。"""
+    t = _services().deps.repo.get_task(task_id)
+    if t is None:
+        typer.echo(f"没有找到任务：{task_id}")
+        raise typer.Exit(code=1)
+    req = t.get("request") or {}
+    typer.echo(f"{t['task_id']}  {t.get('status')}  方式 {req.get('route') or 'auto'}  截至 {req.get('as_of') or '今天'}"
+               + (f"  标的 {req['ticker']}" if req.get("ticker") else ""))
+    typer.echo(f"问题：{req.get('question', '')}")
+    if t.get("error"):
+        typer.echo(f"错误：{t['error']}")
+    res = t.get("result") or {}
+    if res.get("dossier_key"):
+        typer.echo(f"档案：{res['dossier_key']} v{res.get('version')}")
+    it = t.get("interrupt") or {}
+    if it.get("message"):
+        typer.echo(f"待确认：{it['message']}")
+    for e in (t.get("events") or [])[-5:]:
+        typer.echo(f"  [{e.get('node')}] {e.get('message')}")
+
+
 def _service():
     return _services().research
 
